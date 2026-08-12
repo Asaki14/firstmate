@@ -378,21 +378,24 @@ The end-to-end guarantee is owned by:
 tests/fm-backend-herdr-pane-placement-e2e.test.sh
 ```
 
-Observed on 2026-08-12 against Herdr 0.8.0 protocol 19:
+Observed on 2026-08-12 against Herdr 0.8.0 protocol 19, after the right-half stacking change (the launcher keeps its tab's left half undivided and every worker pane stacks in the right half in spawn order):
 
 ```text
 ok - real herdr E2E: a pane-placed worker is created as a new pane inside the launching agent's exact tab and workspace
+ok - real herdr E2E: the first worker takes the right half while the launcher keeps the left
 ok - real herdr E2E: the worker pane carries its fm-<id> label and list-live discovers it there
 ok - real herdr E2E: the split leaves both the focused workspace and the launcher tab's own focused pane alone
-ok - real herdr E2E: repeated pane-placed spawns tile into the same tab without disturbing the launcher or each other
+ok - real herdr E2E: the second worker splits within the right half below the first, and the launcher pane is never touched again
+ok - real herdr E2E: a third worker splits the bottom-most pane of the right-hand stack, keeping the launcher and the higher worker panes untouched
 ok - real herdr E2E: an absent config/herdr-crew-placement still produces one task tab per worker
-ok - real herdr E2E: cleanup closes exactly the recorded worker pane and leaves the launcher, its sibling, and the shared tab intact
+ok - real herdr E2E: tearing down the bottom-most worker retargets the next spawn onto the new bottom-most surviving worker pane
 ok - real herdr E2E: closing a worker that shares the captain's ACTIVE tab removes only that pane and never the launcher, tab, or workspace
+ok - real herdr E2E: once every worker pane is gone, the next spawn falls back to the first-worker case and takes the right half again
 ok - real herdr E2E: a missing launcher pane and an explicit placement/projection conflict both refuse before any worker endpoint exists
 ok - real herdr E2E: isolated lab session removed and default fleet session unchanged
 ```
 
-Deterministic parsing, refusal wording, tiling choice, and rollback bounds are covered without a real binary in `tests/fm-backend-herdr.test.sh`.
+Deterministic parsing, refusal wording, the bottom-most-pane selection, and rollback bounds are covered without a real binary in `tests/fm-backend-herdr.test.sh`.
 
 ### Per-home and presentation topology
 

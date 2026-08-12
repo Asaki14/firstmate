@@ -4309,7 +4309,7 @@ test_split_task_places_a_labeled_pane_in_the_launchers_exact_tab() {
   pass "fm_backend_herdr_split_task: publishes a verified, labeled pane inside the launcher's exact tab"
 }
 
-test_split_task_splits_the_largest_pane_and_halves_its_wider_side() {
+test_split_task_splits_the_bottom_most_worker_pane_never_the_launcher() {
   local dir out log
   dir=$(herdr_split_case split-tiling); log="$dir/log"
   herdr_split_responses "$dir/responses" \
@@ -4320,10 +4320,33 @@ test_split_task_splits_the_largest_pane_and_halves_its_wider_side() {
     '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p2","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p9","tab_id":"w3:t1","workspace_id":"w3"}]}}' \
     "$HERDR_SPLIT_GET" "$HERDR_SPLIT_GET_LABELED"
   out=$(herdr_split_run "$dir")
-  [ "$out" = 'w3:t1 w3:p9' ] || fail "the tiling case should still publish the new pane, got '$out'"
+  [ "$out" = 'w3:t1 w3:p9' ] || fail "the second-worker case should still publish the new pane, got '$out'"
   assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split'$'\x1f''w3:p2'$'\x1f''--direction'$'\x1f''down' \
-    "split_task did not split the largest pane along its wider side"
-  pass "fm_backend_herdr_split_task: tiles the tab by halving the largest pane's wider side"
+    "split_task did not split the sole worker pane downward to grow the right-hand stack"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split'$'\x1f''w3:p1'$'\x1f' \
+    "split_task must never re-split the launcher's own pane once a worker pane exists"
+  pass "fm_backend_herdr_split_task: with one worker pane already in the right half, the second worker splits it downward and the launcher pane is never touched"
+}
+
+test_split_task_stacks_below_the_bottom_most_of_several_worker_panes() {
+  local dir out log
+  dir=$(herdr_split_case split-stack-of-three); log="$dir/log"
+  herdr_split_responses "$dir/responses" \
+    '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p2","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p3","tab_id":"w3:t1","workspace_id":"w3"}]}}' \
+    "$HERDR_SPLIT_NO_LABELS" \
+    '{"result":{"layout":{"workspace_id":"w3","tab_id":"w3:t1","panes":[{"pane_id":"w3:p1","focused":true,"rect":{"x":0,"y":0,"width":100,"height":80}},{"pane_id":"w3:p2","focused":false,"rect":{"x":100,"y":0,"width":100,"height":40}},{"pane_id":"w3:p3","focused":false,"rect":{"x":100,"y":40,"width":100,"height":40}}]}}}' \
+    "$HERDR_SPLIT_RESPONSE" \
+    '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p2","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p3","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p9","tab_id":"w3:t1","workspace_id":"w3"}]}}' \
+    "$HERDR_SPLIT_GET" "$HERDR_SPLIT_GET_LABELED"
+  out=$(herdr_split_run "$dir")
+  [ "$out" = 'w3:t1 w3:p9' ] || fail "the third-worker case should still publish the new pane, got '$out'"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split'$'\x1f''w3:p3'$'\x1f''--direction'$'\x1f''down' \
+    "split_task did not target the bottom-most worker pane (w3:p3, y+height=80) of the right-hand stack"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split'$'\x1f''w3:p2'$'\x1f' \
+    "split_task must not split the higher worker pane (w3:p2) while a lower one exists"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split'$'\x1f''w3:p1'$'\x1f' \
+    "split_task must never re-split the launcher's own pane while any worker pane exists"
+  pass "fm_backend_herdr_split_task: a third worker splits the bottom-most pane of the right-hand stack, leaving the launcher and the higher worker pane untouched"
 }
 
 test_split_task_falls_back_to_the_launcher_pane_when_layout_is_unreadable() {
@@ -4543,7 +4566,8 @@ test_list_live_reports_pane_placed_workers_by_pane_label() {
 test_crew_placement_config_selects_a_placement_or_refuses
 test_split_capable_gates_on_the_running_clients_own_schema
 test_split_task_places_a_labeled_pane_in_the_launchers_exact_tab
-test_split_task_splits_the_largest_pane_and_halves_its_wider_side
+test_split_task_splits_the_bottom_most_worker_pane_never_the_launcher
+test_split_task_stacks_below_the_bottom_most_of_several_worker_panes
 test_split_task_falls_back_to_the_launcher_pane_when_layout_is_unreadable
 test_split_task_refuses_a_launcher_pane_outside_the_named_tab
 test_split_task_refuses_a_live_same_labeled_pane_and_replaces_a_husk

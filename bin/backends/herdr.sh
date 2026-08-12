@@ -2172,27 +2172,35 @@ fm_backend_herdr_workspace_pane_labels() {  # <session> <workspace-id>
 # direction, echoing "<target-pane-id> <right|down>".
 #
 # Layout is a visual nicety, not a safety boundary, so this is deliberately
-# best-effort: it reads Herdr's own per-tab rectangles and splits the LARGEST
-# pane, halving the widest dimension (a terminal cell is about twice as tall as
-# it is wide, so a pane is "wide enough to split sideways" at width >= 2 *
-# height). Repeated spawns therefore tile the tab evenly instead of shaving the
-# launcher's own pane in half again and again. When the layout cannot be read or
-# parsed, this falls back to splitting the launcher's own pane to the right,
-# which is still pane placement - never a silent return to the tab topology.
+# best-effort, but the shape it produces is a deliberate contract: the
+# launcher keeps the LEFT half of its tab undivided no matter how many workers
+# join, and every worker pane lives in the RIGHT half, stacked top to bottom in
+# spawn order. The first worker therefore splits the launcher pane itself
+# (right), and every later worker splits the current BOTTOM-most pane of that
+# right-hand stack (down) - never the launcher pane again - so the launcher
+# never loses more than its original half. Reading "bottom-most" off Herdr's
+# own rectangles rather than tracking spawn order also makes the rule
+# teardown-safe for free: once a worker pane closes, the bottom-most SURVIVING
+# worker pane is simply whichever one Herdr's own layout now reports lowest,
+# and an empty right half (no worker pane left) falls back to the first-worker
+# case above. When the layout cannot be read or parsed at all, this falls back
+# to splitting the launcher's own pane to the right, which is still pane
+# placement - never a silent return to the tab topology.
 fm_backend_herdr_split_placement() {  # <session> <launcher-pane> <launcher-tab>
   local session=$1 launcher_pane=$2 tab_id=$3 layout best
   layout=$(fm_backend_herdr_cli "$session" pane layout --pane "$launcher_pane" 2>/dev/null) || layout=
   if [ -n "$layout" ]; then
-    best=$(printf '%s' "$layout" | jq -r --arg tab "$tab_id" '
+    best=$(printf '%s' "$layout" | jq -r --arg tab "$tab_id" --arg launcher "$launcher_pane" '
       select(.result.layout.tab_id == $tab)
       | [ .result.layout.panes[]?
           | select((.pane_id | type) == "string")
-          | select((.rect.width | type) == "number" and (.rect.height | type) == "number")
-          | {pane_id, width: .rect.width, height: .rect.height, area: (.rect.width * .rect.height)} ]
-      | select(length > 0)
-      | sort_by([-.area, .pane_id])
-      | .[0]
-      | "\(.pane_id) \(if .width >= (.height * 2) then "right" else "down" end)"
+          | select((.rect.y | type) == "number" and (.rect.height | type) == "number")
+          | select(.pane_id != $launcher)
+          | {pane_id, bottom: (.rect.y + .rect.height)} ]
+      | if length > 0
+        then (sort_by([-.bottom, .pane_id]) | .[0] | "\(.pane_id) down")
+        else "\($launcher) right"
+        end
     ' 2>/dev/null)
   fi
   case "$best" in

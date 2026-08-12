@@ -123,6 +123,18 @@ tab_focused_pane() {  # <any-pane-id-in-the-tab>
   lab pane layout --pane "$1" 2>/dev/null | jq -r '.result.layout.focused_pane_id // empty' 2>/dev/null
 }
 
+# pane_rect <any-pane-in-tab> <target-pane> -> "x y width height" read off the
+# tab's own layout, so the right-half stacking rule (bin/backends/herdr.sh
+# fm_backend_herdr_split_placement) can be checked against Herdr's own
+# geometry rather than assumed from spawn order.
+pane_rect() {  # <any-pane-in-tab> <target-pane>
+  lab pane layout --pane "$1" 2>/dev/null \
+    | jq -r --arg p "$2" '.result.layout.panes[]? | select(.pane_id == $p) | "\(.rect.x) \(.rect.y) \(.rect.width) \(.rect.height)"' 2>/dev/null
+}
+rect_field() {  # "<x> <y> <w> <h>" <1|2|3|4>
+  printf '%s' "$1" | awk -v i="$2" '{print $i}'
+}
+
 pane_count_in_tab() {  # <workspace_id> <tab_id>
   panes_in_tab "$1" "$2" | grep -c '[^[:space:]]' || true
 }
@@ -258,6 +270,16 @@ PANE_A=$(meta_field "$META_A" herdr_pane_id)
   || fail "pane placement must not publish a presentation journal"
 pass "real herdr E2E: a pane-placed worker is created as a new pane inside the launching agent's exact tab and workspace"
 
+# --- 1b. the first worker lands strictly right of the untouched launcher ---
+
+LAUNCHER_RECT_1=$(pane_rect "$PANE_LAUNCH" "$PANE_LAUNCH")
+[ -n "$LAUNCHER_RECT_1" ] || fail "could not read the launcher pane's own rect"
+PANE_A_RECT=$(pane_rect "$PANE_LAUNCH" "$PANE_A")
+[ -n "$PANE_A_RECT" ] || fail "could not read the first worker pane's rect"
+[ "$(rect_field "$PANE_A_RECT" 1)" -gt "$(rect_field "$LAUNCHER_RECT_1" 1)" ] \
+  || fail "the first worker must land strictly right of the launcher pane, launcher=$LAUNCHER_RECT_1 worker=$PANE_A_RECT"
+pass "real herdr E2E: the first worker takes the right half while the launcher keeps the left"
+
 # --- 2. the worker pane really carries the fm-<id> label -------------------
 
 [ "$(pane_field "$PANE_A" label)" = "fm-paneA" ] \
@@ -282,7 +304,8 @@ pass "real herdr E2E: the worker pane carries its fm-<id> label and list-live di
   || fail "the launcher's own pane lost its tab's focus to the new worker pane"
 pass "real herdr E2E: the split leaves both the focused workspace and the launcher tab's own focused pane alone"
 
-# --- 4. a second worker joins the same tab and both stay live --------------
+# --- 4. a second worker joins the RIGHT half, below the first, never --------
+#        re-splitting the launcher's own pane.
 
 spawn_from_launcher "$PANE_LAUNCH" "$PANE_HOME" paneB "$PROJ" --mode no-mistakes --yolo off
 [ "$SPAWN_RC" -eq 0 ] || fail "a second pane-placed spawn failed"$'\n'"$(cat "$SPAWN_ERR")"
@@ -298,7 +321,40 @@ lab pane get "$PANE_A" >/dev/null 2>&1 || fail "the second spawn disturbed the f
 [ "$(focused_workspace)" = "$WS_OTHER" ] || fail "the second pane-placed spawn stole focus"
 [ "$(tab_focused_pane "$PANE_LAUNCH")" = "$PANE_LAUNCH" ] \
   || fail "the second split moved the launcher tab's focus off the launching agent's pane"
-pass "real herdr E2E: repeated pane-placed spawns tile into the same tab without disturbing the launcher or each other"
+LAUNCHER_RECT_2=$(pane_rect "$PANE_LAUNCH" "$PANE_LAUNCH")
+[ "$LAUNCHER_RECT_2" = "$LAUNCHER_RECT_1" ] \
+  || fail "the second worker must never re-split the launcher's own pane, was=$LAUNCHER_RECT_1 now=$LAUNCHER_RECT_2"
+PANE_A_RECT_2=$(pane_rect "$PANE_LAUNCH" "$PANE_A")
+PANE_B_RECT=$(pane_rect "$PANE_LAUNCH" "$PANE_B")
+[ "$(rect_field "$PANE_B_RECT" 1)" = "$(rect_field "$PANE_A_RECT_2" 1)" ] \
+  || fail "the second worker must share the first worker's right-hand column, A=$PANE_A_RECT_2 B=$PANE_B_RECT"
+[ "$(rect_field "$PANE_B_RECT" 2)" -gt "$(rect_field "$PANE_A_RECT_2" 2)" ] \
+  || fail "the second worker must sit BELOW the first (top-right/bottom-right), A=$PANE_A_RECT_2 B=$PANE_B_RECT"
+pass "real herdr E2E: the second worker splits within the right half below the first, and the launcher pane is never touched again"
+
+# --- 4b. a third worker stacks below the current bottom of the right column
+
+D_BRIEF_DIR="$PANE_HOME/data/paneD"; mkdir -p "$D_BRIEF_DIR"
+printf 'trivial pane-placement brief: nothing to do.\n' > "$D_BRIEF_DIR/brief.md"
+spawn_from_launcher "$PANE_LAUNCH" "$PANE_HOME" paneD "$PROJ" --mode no-mistakes --yolo off
+[ "$SPAWN_RC" -eq 0 ] || fail "a third pane-placed spawn failed"$'\n'"$(cat "$SPAWN_ERR")"
+META_D="$PANE_HOME/state/paneD.meta"
+record_worktree "$META_D"
+PANE_D=$(meta_field "$META_D" herdr_pane_id)
+[ -n "$PANE_D" ] && [ "$PANE_D" != "$PANE_A" ] && [ "$PANE_D" != "$PANE_B" ] \
+  || fail "the third worker did not get its own pane"
+[ "$(pane_count_in_tab "$WS_LAUNCH" "$TAB_LAUNCH")" = 4 ] \
+  || fail "the launcher tab should now hold the launcher's pane and three worker panes"
+LAUNCHER_RECT_3=$(pane_rect "$PANE_LAUNCH" "$PANE_LAUNCH")
+[ "$LAUNCHER_RECT_3" = "$LAUNCHER_RECT_1" ] \
+  || fail "the third worker must never re-split the launcher's own pane, was=$LAUNCHER_RECT_1 now=$LAUNCHER_RECT_3"
+PANE_B_RECT_3=$(pane_rect "$PANE_LAUNCH" "$PANE_B")
+PANE_D_RECT=$(pane_rect "$PANE_LAUNCH" "$PANE_D")
+[ "$(rect_field "$PANE_D_RECT" 1)" = "$(rect_field "$PANE_B_RECT_3" 1)" ] \
+  || fail "the third worker must stay in the same right-hand column, B=$PANE_B_RECT_3 D=$PANE_D_RECT"
+[ "$(rect_field "$PANE_D_RECT" 2)" -gt "$(rect_field "$PANE_B_RECT_3" 2)" ] \
+  || fail "the third worker must land below the current bottom of the right-hand stack, B=$PANE_B_RECT_3 D=$PANE_D_RECT"
+pass "real herdr E2E: a third worker splits the bottom-most pane of the right-hand stack, keeping the launcher and the higher worker panes untouched"
 
 # --- 5. an absent config keeps the tab topology unchanged ------------------
 
@@ -313,42 +369,95 @@ PANE_C=$(meta_field "$META_C" herdr_pane_id)
   || fail "with no placement configured, the worker must get its own tab, not join the launcher's"
 [ "$(meta_field "$META_C" herdr_tab_id)" = "$(pane_field "$PANE_C" tab_id)" ] \
   || fail "the default placement recorded a tab other than the one it created"
-[ "$(pane_count_in_tab "$WS_LAUNCH" "$TAB_LAUNCH")" = 3 ] \
+[ "$(pane_count_in_tab "$WS_LAUNCH" "$TAB_LAUNCH")" = 4 ] \
   || fail "a default-placement spawn added a pane to the launcher's own tab"
 pass "real herdr E2E: an absent config/herdr-crew-placement still produces one task tab per worker"
 
-# --- 6. cleanup closes exactly the worker's own pane ----------------------
+# --- 6. teardown of the bottom-most worker retargets the next spawn onto ---
+#        the new bottom-most SURVIVING worker pane (never a stale slot, never
+#        the launcher).
 
-teardown_task "$PANE_HOME" paneA || fail "fm-teardown.sh failed for paneA"$'\n'"$(cat "$TMP_ROOT/paneA.teardown.out")"
-[ ! -f "$META_A" ] || fail "fm-teardown.sh did not remove paneA's durable record"
-if lab pane get "$PANE_A" >/dev/null 2>&1; then
-  fail "fm-teardown.sh did not close paneA's own pane"
+teardown_task "$PANE_HOME" paneD || fail "fm-teardown.sh failed for paneD"$'\n'"$(cat "$TMP_ROOT/paneD.teardown.out")"
+[ ! -f "$META_D" ] || fail "fm-teardown.sh did not remove paneD's durable record"
+if lab pane get "$PANE_D" >/dev/null 2>&1; then
+  fail "fm-teardown.sh did not close paneD's own pane"
 fi
 lab pane get "$PANE_LAUNCH" >/dev/null 2>&1 || fail "cleanup closed the launching agent's own pane"
-lab pane get "$PANE_B" >/dev/null 2>&1 || fail "cleanup closed the sibling worker's pane"
+lab pane get "$PANE_A" >/dev/null 2>&1 || fail "cleanup closed a surviving worker's pane (A)"
+lab pane get "$PANE_B" >/dev/null 2>&1 || fail "cleanup closed a surviving worker's pane (B)"
 tab_exists "$WS_LAUNCH" "$TAB_LAUNCH" || fail "cleanup closed the shared tab"
-[ "$(pane_count_in_tab "$WS_LAUNCH" "$TAB_LAUNCH")" = 2 ] \
+[ "$(pane_count_in_tab "$WS_LAUNCH" "$TAB_LAUNCH")" = 3 ] \
   || fail "cleanup removed more than the one worker pane"
-pass "real herdr E2E: cleanup closes exactly the recorded worker pane and leaves the launcher, its sibling, and the shared tab intact"
 
-# --- 7. the same holds when the worker's tab is the ACTIVE tab -------------
+R1_BRIEF_DIR="$PANE_HOME/data/paneRespawn1"; mkdir -p "$R1_BRIEF_DIR"
+printf 'trivial pane-placement brief: nothing to do.\n' > "$R1_BRIEF_DIR/brief.md"
+spawn_from_launcher "$PANE_LAUNCH" "$PANE_HOME" paneRespawn1 "$PROJ" --mode no-mistakes --yolo off
+[ "$SPAWN_RC" -eq 0 ] || fail "a respawn after teardown of the bottom-most worker failed"$'\n'"$(cat "$SPAWN_ERR")"
+META_R1="$PANE_HOME/state/paneRespawn1.meta"
+record_worktree "$META_R1"
+PANE_R1=$(meta_field "$META_R1" herdr_pane_id)
+[ -n "$PANE_R1" ] || fail "paneRespawn1 meta is missing herdr_pane_id"
+[ "$(pane_count_in_tab "$WS_LAUNCH" "$TAB_LAUNCH")" = 4 ] \
+  || fail "the respawn should have added exactly one pane back to the launcher's tab"
+LAUNCHER_RECT_4=$(pane_rect "$PANE_LAUNCH" "$PANE_LAUNCH")
+[ "$LAUNCHER_RECT_4" = "$LAUNCHER_RECT_1" ] \
+  || fail "a respawn must never re-split the launcher's own pane, was=$LAUNCHER_RECT_1 now=$LAUNCHER_RECT_4"
+PANE_B_RECT_4=$(pane_rect "$PANE_LAUNCH" "$PANE_B")
+PANE_R1_RECT=$(pane_rect "$PANE_LAUNCH" "$PANE_R1")
+[ "$(rect_field "$PANE_R1_RECT" 1)" = "$(rect_field "$PANE_B_RECT_4" 1)" ] \
+  || fail "the respawn must stay in the right-hand column, B=$PANE_B_RECT_4 respawn=$PANE_R1_RECT"
+[ "$(rect_field "$PANE_R1_RECT" 2)" -gt "$(rect_field "$PANE_B_RECT_4" 2)" ] \
+  || fail "the respawn must land below B, the new bottom-most SURVIVOR (not D's old slot), B=$PANE_B_RECT_4 respawn=$PANE_R1_RECT"
+pass "real herdr E2E: tearing down the bottom-most worker retargets the next spawn onto the new bottom-most surviving worker pane"
+
+# --- 7. the same close path holds when the worker's tab is the ACTIVE tab --
 # This is the shape the tab topology never produces and the reason the
-# focus-safe emptying plan is inapplicable rather than skipped here.
+# focus-safe emptying plan is inapplicable rather than skipped here. Draining
+# every worker pane down to none, then spawning once more, also proves the
+# "no survivor" fallback: the next worker takes the right half exactly like
+# the very first one did.
 
 lab tab focus "$TAB_LAUNCH" >/dev/null 2>&1 || fail "could not focus the launcher's own tab"
 [ "$(focused_workspace)" = "$WS_LAUNCH" ] || fail "the launcher's workspace did not take focus"
-teardown_task "$PANE_HOME" paneB || fail "fm-teardown.sh failed for paneB in the active tab"$'\n'"$(cat "$TMP_ROOT/paneB.teardown.out")"
-[ ! -f "$META_B" ] || fail "fm-teardown.sh did not remove paneB's durable record"
-if lab pane get "$PANE_B" >/dev/null 2>&1; then
-  fail "fm-teardown.sh did not close paneB's own pane in the active tab"
+teardown_task "$PANE_HOME" paneRespawn1 || fail "fm-teardown.sh failed for paneRespawn1 in the active tab"$'\n'"$(cat "$TMP_ROOT/paneRespawn1.teardown.out")"
+[ ! -f "$META_R1" ] || fail "fm-teardown.sh did not remove paneRespawn1's durable record"
+if lab pane get "$PANE_R1" >/dev/null 2>&1; then
+  fail "fm-teardown.sh did not close paneRespawn1's own pane in the active tab"
 fi
 lab pane get "$PANE_LAUNCH" >/dev/null 2>&1 || fail "an active-tab cleanup closed the launching agent's own pane"
 tab_exists "$WS_LAUNCH" "$TAB_LAUNCH" || fail "an active-tab cleanup closed the shared tab"
 lab workspace list 2>/dev/null | jq -e --arg w "$WS_LAUNCH" 'any(.result.workspaces[]?; .workspace_id == $w)' >/dev/null 2>&1 \
   || fail "an active-tab cleanup removed the launcher's workspace"
-[ "$(pane_count_in_tab "$WS_LAUNCH" "$TAB_LAUNCH")" = 1 ] \
-  || fail "the launcher's tab should be back to exactly the launcher's own pane"
+[ "$(pane_count_in_tab "$WS_LAUNCH" "$TAB_LAUNCH")" = 3 ] \
+  || fail "closing paneRespawn1 should leave exactly the launcher, A, and B"
 pass "real herdr E2E: closing a worker that shares the captain's ACTIVE tab removes only that pane and never the launcher, tab, or workspace"
+
+teardown_task "$PANE_HOME" paneB || fail "fm-teardown.sh failed draining paneB"$'\n'"$(cat "$TMP_ROOT/paneB.teardown.out")"
+teardown_task "$PANE_HOME" paneA || fail "fm-teardown.sh failed draining paneA"$'\n'"$(cat "$TMP_ROOT/paneA.teardown.out")"
+[ "$(pane_count_in_tab "$WS_LAUNCH" "$TAB_LAUNCH")" = 1 ] \
+  || fail "the launcher's tab should be back to exactly the launcher's own pane once every worker is gone"
+
+R2_BRIEF_DIR="$PANE_HOME/data/paneRespawn2"; mkdir -p "$R2_BRIEF_DIR"
+printf 'trivial pane-placement brief: nothing to do.\n' > "$R2_BRIEF_DIR/brief.md"
+spawn_from_launcher "$PANE_LAUNCH" "$PANE_HOME" paneRespawn2 "$PROJ" --mode no-mistakes --yolo off
+[ "$SPAWN_RC" -eq 0 ] || fail "a respawn with no surviving worker failed"$'\n'"$(cat "$SPAWN_ERR")"
+META_R2="$PANE_HOME/state/paneRespawn2.meta"
+record_worktree "$META_R2"
+PANE_R2=$(meta_field "$META_R2" herdr_pane_id)
+[ -n "$PANE_R2" ] || fail "paneRespawn2 meta is missing herdr_pane_id"
+[ "$(pane_count_in_tab "$WS_LAUNCH" "$TAB_LAUNCH")" = 2 ] \
+  || fail "the respawn with no survivor should have added exactly one pane"
+LAUNCHER_RECT_5=$(pane_rect "$PANE_LAUNCH" "$PANE_LAUNCH")
+[ "$LAUNCHER_RECT_5" = "$LAUNCHER_RECT_1" ] \
+  || fail "a respawn with no survivor must still keep the launcher's own pane exactly as it started, was=$LAUNCHER_RECT_1 now=$LAUNCHER_RECT_5"
+PANE_R2_RECT=$(pane_rect "$PANE_LAUNCH" "$PANE_R2")
+[ "$(rect_field "$PANE_R2_RECT" 1)" -gt "$(rect_field "$LAUNCHER_RECT_5" 1)" ] \
+  || fail "with no worker pane surviving, the next spawn must behave like the first worker and land right of the launcher, launcher=$LAUNCHER_RECT_5 respawn=$PANE_R2_RECT"
+pass "real herdr E2E: once every worker pane is gone, the next spawn falls back to the first-worker case and takes the right half again"
+
+teardown_task "$PANE_HOME" paneRespawn2 || fail "fm-teardown.sh failed draining paneRespawn2"$'\n'"$(cat "$TMP_ROOT/paneRespawn2.teardown.out")"
+[ "$(pane_count_in_tab "$WS_LAUNCH" "$TAB_LAUNCH")" = 1 ] \
+  || fail "the launcher's tab should be back to exactly the launcher's own pane before the refusal cases"
 
 lab tab focus "$WS_OTHER_TAB" >/dev/null 2>&1 || fail "could not restore focus to the captain's workspace"
 
