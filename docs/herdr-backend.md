@@ -218,8 +218,9 @@ A fully unreadable target stops retrying and reports unknown.
 The poll density bounds the residual possibility of an extremely fast complete turn; a missed transition can cause only a redundant Enter on an empty composer, never duplicate message text.
 
 `pane read --lines N` can return empty output when N is below the viewport height.
-The capture owner requests at least 200 lines from Herdr and trims locally to the caller's bound.
-This generous floor is required for small composer and peek reads.
+Historical and ANSI capture request at least 200 lines from Herdr and trim locally to the caller's bound.
+This generous floor is required for small composer and explicit peek reads.
+Recurring watcher hashing instead reads the passive `visible` snapshot and trims locally, so routine monitoring never requests alternate-screen history.
 
 Herdr's native agent state can read idle while a harness waits on its own long foreground tool.
 The shared crew-state path therefore accepts a native `busy` as evidence of activity but never a native `idle` as evidence that a worker has stopped; the task's own semantic busy state (`bin/fm-busy-lib.sh`) decides that.
