@@ -2150,16 +2150,20 @@ fm_backend_herdr_tab_pane_ids() {  # <session> <workspace-id> <tab-id>
     '.result.panes[]? | select(.tab_id == $tab) | .pane_id' 2>/dev/null | LC_ALL=C sort
 }
 
-# fm_backend_herdr_tab_pane_labels: "<pane-id>\t<label>" for every pane in
-# <tab-id> that carries a non-empty label. Used for the duplicate/husk check
-# that mirrors fm_backend_herdr_create_task's tab-label check.
-fm_backend_herdr_tab_pane_labels() {  # <session> <workspace-id> <tab-id>
-  local session=$1 wsid=$2 tab_id=$3 panes
+# fm_backend_herdr_workspace_pane_labels: "<pane-id>\t<label>" for every pane
+# anywhere in <workspace-id> that carries a non-empty label. Used for the
+# duplicate/husk check that mirrors fm_backend_herdr_create_task's tab-label
+# check; the scan is deliberately WORKSPACE-wide, matching the scope
+# fm_backend_herdr_list_live discovers fm-<id> pane labels in, so the refusal
+# scope is never narrower than the discovery scope (herdr can move a pane
+# between tabs, so a live worker pane is not guaranteed to still be in the
+# launcher's own tab).
+fm_backend_herdr_workspace_pane_labels() {  # <session> <workspace-id>
+  local session=$1 wsid=$2 panes
   panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || return 1
   printf '%s' "$panes" | jq -e '(.result.panes | type) == "array"' >/dev/null 2>&1 || return 1
-  printf '%s' "$panes" | jq -r --arg tab "$tab_id" '
+  printf '%s' "$panes" | jq -r '
     .result.panes[]?
-    | select(.tab_id == $tab)
     | select((.label | type) == "string" and (.label | length) > 0)
     | "\(.pane_id)\t\(.label)"' 2>/dev/null
 }
@@ -2229,14 +2233,16 @@ fm_backend_herdr_split_rollback() {  # <session> <pane-id> <reason>
 #
 # Duplicate handling mirrors fm_backend_herdr_create_task and fails closed: an
 # unreadable pane or tab listing refuses the spawn rather than passing as "no
-# duplicate". The scan covers the launcher's whole WORKSPACE, not just its own
-# tab, so a same-labeled live task TAB left behind by the tab topology (a task
-# created before config/herdr-crew-placement changed) refuses too, exactly as
-# a same-labeled live pane in this tab does. A confirmed husk of either shape
-# (a restored, agent-less pane or tab after a Herdr restart) is replaced, and
-# the replacement is always created BEFORE the husk is closed. The launcher's
-# own tab is never a husk candidate: it is the tab being split into and keeps
-# the launcher's surviving pane, so it is excluded from the tab scan and never
+# duplicate". Both scans cover the launcher's whole WORKSPACE, never just its
+# own tab, matching the workspace-wide scope list-live discovers fm-<id>
+# labels in: a same-labeled live pane in ANY tab of this workspace (herdr can
+# move panes between tabs) and a same-labeled live task TAB left behind by
+# the tab topology (a task created before config/herdr-crew-placement
+# changed) both refuse. A confirmed husk of either shape (a restored,
+# agent-less pane or tab after a Herdr restart) is replaced, and the
+# replacement is always created BEFORE the husk is closed. The launcher's own
+# tab is never a husk candidate: it is the tab being split into and keeps the
+# launcher's surviving pane, so it is excluded from the tab scan and never
 # closed; closing a husk tab can never empty the workspace for the same
 # reason.
 fm_backend_herdr_split_task() {  # <session> <launcher-pane> <launcher-tab> <launcher-workspace> <label> <cwd>
@@ -2257,8 +2263,8 @@ fm_backend_herdr_split_task() {  # <session> <launcher-pane> <launcher-tab> <lau
       ;;
   esac
 
-  pane_labels=$(fm_backend_herdr_tab_pane_labels "$session" "$wsid" "$tab_id") || {
-    echo "error: could not read the pane labels of herdr tab $tab_id (session $session); refusing to spawn while duplicates cannot be checked" >&2
+  pane_labels=$(fm_backend_herdr_workspace_pane_labels "$session" "$wsid") || {
+    echo "error: could not read the pane labels of herdr workspace $wsid (session $session); refusing to spawn while duplicates cannot be checked" >&2
     return 1
   }
   husk_panes=""
@@ -2266,7 +2272,7 @@ fm_backend_herdr_split_task() {  # <session> <launcher-pane> <launcher-tab> <lau
     [ -n "$dup_pane" ] || continue
     [ "$dup_label" = "$label" ] || continue
     if ! fm_backend_herdr_tab_is_husk "$session" "$dup_pane"; then
-      echo "error: herdr pane '$label' already exists in tab $tab_id (session $session)" >&2
+      echo "error: herdr pane '$label' already exists in workspace $wsid (session $session)" >&2
       return 1
     fi
     husk_panes="${husk_panes}${dup_pane}"$'\n'
@@ -2364,8 +2370,8 @@ EOF
     done <<EOF
 $husk_panes
 EOF
-    remaining=$(fm_backend_herdr_tab_pane_labels "$session" "$wsid" "$tab_id") || {
-      echo "error: could not verify herdr husk removal for '$label' in tab $tab_id (session $session)" >&2
+    remaining=$(fm_backend_herdr_workspace_pane_labels "$session" "$wsid") || {
+      echo "error: could not verify herdr husk removal for '$label' in workspace $wsid (session $session)" >&2
       return 1
     }
     remaining=$(printf '%s\n' "$remaining" \
@@ -2373,7 +2379,7 @@ EOF
     case "$remaining" in
       0) ;;
       *)
-        echo "error: failed to remove $remaining preexisting herdr pane(s) labeled '$label' in tab $tab_id (session $session)" >&2
+        echo "error: failed to remove $remaining preexisting herdr pane(s) labeled '$label' in workspace $wsid (session $session)" >&2
         return 1
         ;;
     esac

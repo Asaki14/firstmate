@@ -4401,6 +4401,25 @@ test_split_task_refuses_an_unreadable_pane_label_listing() {
   pass "fm_backend_herdr_split_task: an unreadable pane label listing refuses instead of passing as no-duplicate"
 }
 
+test_split_task_refuses_a_live_same_labeled_pane_in_another_tab() {
+  local dir out status log
+  dir=$(herdr_split_case split-duplicate-pane-other-tab); log="$dir/log"
+  printf '%s\n' "$HERDR_SPLIT_BEFORE" > "$dir/responses/1.out"
+  # 2: the workspace-wide label scan sees a live fm-<id> pane living in a
+  # DIFFERENT tab of the launcher's workspace (herdr can move panes between
+  # tabs); 3-4: the husk classifier sees a working agent.
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3","label":"captain"},{"pane_id":"w3:p5","tab_id":"w3:t2","workspace_id":"w3","label":"fm-task-cp"}]}}' > "$dir/responses/2.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w3:p5","tab_id":"w3:t2","workspace_id":"w3"}}}' > "$dir/responses/3.out"
+  printf '%s\n' '{"result":{"agent":{"agent_status":"working"}}}' > "$dir/responses/4.out"
+  out=$(herdr_split_run "$dir")
+  status=$?
+  [ "$status" -ne 0 ] || fail "a live same-labeled pane in another tab of the workspace must refuse a second launch"
+  assert_contains "$out" "already exists in workspace" "the refusal did not name the workspace-level pane duplicate"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split' "a workspace-level pane duplicate must refuse before splitting anything"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' "a live duplicate pane must never be closed"
+  pass "fm_backend_herdr_split_task: refuses a live same-labeled pane in another tab of the launcher's workspace"
+}
+
 test_split_task_refuses_a_live_same_labeled_tab_elsewhere_in_the_workspace() {
   local dir out status log
   dir=$(herdr_split_case split-duplicate-workspace-tab); log="$dir/log"
@@ -4529,6 +4548,7 @@ test_split_task_falls_back_to_the_launcher_pane_when_layout_is_unreadable
 test_split_task_refuses_a_launcher_pane_outside_the_named_tab
 test_split_task_refuses_a_live_same_labeled_pane_and_replaces_a_husk
 test_split_task_refuses_an_unreadable_pane_label_listing
+test_split_task_refuses_a_live_same_labeled_pane_in_another_tab
 test_split_task_refuses_a_live_same_labeled_tab_elsewhere_in_the_workspace
 test_split_task_refuses_when_the_tab_gained_no_pane_or_too_many
 test_split_task_rolls_back_only_the_pane_it_created
