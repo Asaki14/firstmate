@@ -95,6 +95,8 @@ Teardown closes the exact recorded worker pane and confirms only that pane gone,
 The focus-safe workspace-emptying plan is inapplicable here by construction rather than skipped: it exists only for a close that would empty a workspace, and a pane-placed worker always shares its tab with the launcher's own surviving pane, so the tab keeps at least one pane and the workspace cannot be emptied.
 The close therefore takes the ordinary confirmed explicit-close path, including when the worker's tab is the captain's active tab, which is the normal case for this placement; it moves focus only within that tab and removes nothing else.
 
+`tests/fm-backend-herdr-pane-placement-e2e.test.sh` covers placement, labeling and discovery, focus preservation, repeated spawns, the unchanged tab default, exact-pane cleanup including in the active tab, and both refusals through the guarded lab path; [`verification/runtime-backends.md`](verification/runtime-backends.md#pane-crew-placement) owns the active versioned evidence.
+
 ## Presentation spaces
 
 Each new crewmate or scout is placed in a disposable one-task workspace by default, on Herdr 0.8.0 and newer.
@@ -351,6 +353,7 @@ tests/fm-backend-herdr-prune-safety-e2e.test.sh
 tests/fm-backend-herdr-respawn-idem-e2e.test.sh
 tests/fm-backend-herdr-workspace-per-home-e2e.test.sh
 tests/fm-backend-herdr-launcher-workspace-e2e.test.sh
+tests/fm-backend-herdr-pane-placement-e2e.test.sh
 tests/fm-backend-herdr-presentation-e2e.test.sh
 tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
