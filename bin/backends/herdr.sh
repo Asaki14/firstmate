@@ -2227,14 +2227,23 @@ fm_backend_herdr_split_rollback() {  # <session> <pane-id> <reason>
 # pane, so a future response-shape change cannot silently publish the wrong
 # endpoint.
 #
-# Duplicate-label handling mirrors fm_backend_herdr_create_task exactly: a live
-# or unreadable same-labeled pane refuses, a confirmed husk (a restored,
-# agent-less pane after a Herdr restart) is replaced, and the replacement is
-# always created BEFORE the husk is closed.
+# Duplicate handling mirrors fm_backend_herdr_create_task and fails closed: an
+# unreadable pane or tab listing refuses the spawn rather than passing as "no
+# duplicate". The scan covers the launcher's whole WORKSPACE, not just its own
+# tab, so a same-labeled live task TAB left behind by the tab topology (a task
+# created before config/herdr-crew-placement changed) refuses too, exactly as
+# a same-labeled live pane in this tab does. A confirmed husk of either shape
+# (a restored, agent-less pane or tab after a Herdr restart) is replaced, and
+# the replacement is always created BEFORE the husk is closed. The launcher's
+# own tab is never a husk candidate: it is the tab being split into and keeps
+# the launcher's surviving pane, so it is excluded from the tab scan and never
+# closed; closing a husk tab can never empty the workspace for the same
+# reason.
 fm_backend_herdr_split_task() {  # <session> <launcher-pane> <launcher-tab> <launcher-workspace> <label> <cwd>
   local session=$1 launcher_pane=$2 tab_id=$3 wsid=$4 label=$5 cwd=$6
   local before after placement target direction out response_pane new_pane created
-  local dup_pane dup_label husk_panes info info_tab info_ws info_label remaining
+  local dup_pane dup_label pane_labels husk_panes info info_tab info_ws info_label remaining
+  local tab_list dup_tabs dup_tab dup_tab_pane husk_tab_ids remaining_tabs
 
   before=$(fm_backend_herdr_tab_pane_ids "$session" "$wsid" "$tab_id") || {
     echo "error: could not list the panes of herdr tab $tab_id (session $session); refusing to split a tab whose contents are unreadable" >&2
@@ -2248,6 +2257,10 @@ fm_backend_herdr_split_task() {  # <session> <launcher-pane> <launcher-tab> <lau
       ;;
   esac
 
+  pane_labels=$(fm_backend_herdr_tab_pane_labels "$session" "$wsid" "$tab_id") || {
+    echo "error: could not read the pane labels of herdr tab $tab_id (session $session); refusing to spawn while duplicates cannot be checked" >&2
+    return 1
+  }
   husk_panes=""
   while IFS=$'\t' read -r dup_pane dup_label; do
     [ -n "$dup_pane" ] || continue
@@ -2257,7 +2270,33 @@ fm_backend_herdr_split_task() {  # <session> <launcher-pane> <launcher-tab> <lau
       return 1
     fi
     husk_panes="${husk_panes}${dup_pane}"$'\n'
-  done < <(fm_backend_herdr_tab_pane_labels "$session" "$wsid" "$tab_id" || true)
+  done <<EOF
+$pane_labels
+EOF
+
+  tab_list=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || {
+    echo "error: could not list the tabs of herdr workspace $wsid (session $session); refusing to spawn while duplicates cannot be checked" >&2
+    return 1
+  }
+  dup_tabs=$(printf '%s' "$tab_list" | jq -r --arg want "$label" 'if (.result.tabs | type) == "array" then .result.tabs[] | select(.label == $want) | .tab_id else error("missing result.tabs") end' 2>/dev/null) || {
+    echo "error: could not parse herdr tab list output for workspace $wsid (session $session)" >&2
+    return 1
+  }
+  husk_tab_ids=""
+  if [ -n "$dup_tabs" ]; then
+    while IFS= read -r dup_tab; do
+      [ -n "$dup_tab" ] || continue
+      [ "$dup_tab" != "$tab_id" ] || continue
+      dup_tab_pane=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$dup_tab")
+      if [ -z "$dup_tab_pane" ] || ! fm_backend_herdr_tab_is_husk "$session" "$dup_tab_pane"; then
+        echo "error: herdr tab '$label' already exists in workspace $wsid (session $session)" >&2
+        return 1
+      fi
+      husk_tab_ids="${husk_tab_ids}${dup_tab}"$'\n'
+    done <<EOF
+$dup_tabs
+EOF
+  fi
 
   placement=$(fm_backend_herdr_split_placement "$session" "$launcher_pane" "$tab_id")
   target=${placement%% *}
@@ -2338,6 +2377,30 @@ EOF
         return 1
         ;;
     esac
+  fi
+
+  if [ -n "$husk_tab_ids" ]; then
+    while IFS= read -r dup_tab; do
+      [ -n "$dup_tab" ] || continue
+      fm_backend_herdr_cli "$session" tab close "$dup_tab" >/dev/null 2>&1 || true
+    done <<EOF
+$husk_tab_ids
+EOF
+    tab_list=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || {
+      echo "error: could not verify herdr husk removal for tab '$label' in workspace $wsid (session $session)" >&2
+      return 1
+    }
+    if ! printf '%s' "$tab_list" | jq -e '(.result.tabs | type) == "array"' >/dev/null 2>&1; then
+      echo "error: could not parse herdr tab list output for workspace $wsid (session $session)" >&2
+      return 1
+    fi
+    remaining_tabs=$(printf '%s' "$tab_list" | jq -r --arg want "$label" --arg keep "$tab_id" \
+      '.result.tabs[]? | select(.label == $want and .tab_id != $keep) | .tab_id' 2>/dev/null)
+    remaining_tabs=${remaining_tabs//$'\n'/ }
+    if [ -n "$remaining_tabs" ]; then
+      echo "error: failed to remove preexisting herdr tab(s) $remaining_tabs for label '$label' in workspace $wsid (session $session)" >&2
+      return 1
+    fi
   fi
 
   printf '%s %s' "$tab_id" "$new_pane"

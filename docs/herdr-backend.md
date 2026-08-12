@@ -77,15 +77,17 @@ The setting is inherited into secondmate homes through the normal configuration-
 A `--secondmate` launch itself always uses tab placement, because it stands up another home's own workspace and has no launcher pane there to split.
 
 Pane placement uses the same verified launcher identity as launcher-bound workspace placement and trusts no label.
-It refuses, before any endpoint exists, when this process is not running in a Herdr pane, when the claimed launcher identity is unreadable, contradictory, stale, or from another session, when the running client's own schema does not carry `pane.split` and `pane.rename` in the shape the adapter sends, or when the split fails.
-None of those refusals fall back to the tab topology.
+It refuses, before any endpoint exists, when this process is not running in a Herdr pane, when the claimed launcher identity is unreadable, contradictory, stale, or from another session, when the running client's own schema does not carry `pane.split` and `pane.rename` in the shape the adapter sends, when the panes or tabs of the launcher's workspace cannot be listed or parsed for the duplicate check, when a live or unreadable same-labeled endpoint already exists anywhere in that workspace, when this id's existing journal or metadata records a live or unknown endpoint, or when the split fails.
+None of those refusals fall back to the tab topology, and none of them publish anything.
 
 Placement inside the tab is a visual nicety rather than a safety boundary: Firstmate reads Herdr's own per-tab rectangles and splits the largest pane, halving its wider dimension, so repeated spawns tile the tab instead of shaving the launcher's own pane in half each time.
 An unreadable layout falls back to splitting the launcher's pane to the right, which is still pane placement.
 The new pane is identified by diffing the tab's own pane list around the split rather than by trusting one response field: exactly one new pane must appear, a pane id in the split response must be that same pane, and the pane must read back inside the launcher's exact tab and workspace.
 It is then labeled `fm-<id>`, which is what makes it discoverable by list-live and by a bare selector, and a pane that cannot be verified, cannot carry that label, or lands anywhere else is closed again rather than published.
 Recovery, list-live, bare-selector resolution, composer reads, steering, peeking, native agent state, and busy state all work unchanged because the recorded endpoint is still an exact `<session>:<pane-id>`; list-live reads the `fm-<id>` label off the pane for this placement and off the tab for the other one.
-A restored agent-less same-labeled pane after a Herdr restart is replaced exactly as a restored task tab is, with the replacement created before the husk is closed.
+The duplicate scan is fail-closed and covers the launcher's whole workspace: an unreadable pane or tab listing refuses the spawn instead of passing as no duplicate, and a live or unreadable same-labeled pane in the launcher's tab or task tab elsewhere in that workspace, such as one left behind by the tab topology before the placement changed, refuses too.
+A restored agent-less same-labeled husk of either shape after a Herdr restart is replaced exactly as the tab topology replaces one, with the replacement created before the husk is closed; the launcher's own tab is never a husk candidate and is never closed.
+Before anything is placed, an existing presentation journal or task metadata for the same id passes the same duplicate-launch isolation the projection recovery path applies: a live or unknown recorded endpoint refuses the spawn and publishes nothing, and only a positively dead or agent-free prior endpoint proceeds, exactly as on the flat path.
 
 Pane placement and presentation spaces are two answers to the same question and never compose.
 Pane placement suppresses the projection for an unconfigured or opted-out home, and an explicit `config/herdr-presentation-spaces` value of `on` alongside `config/herdr-crew-placement=pane` is a configuration conflict that refuses the spawn rather than letting one silently win.

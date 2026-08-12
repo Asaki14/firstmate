@@ -1912,6 +1912,27 @@ case "$BACKEND" in
           ;;
         *) exit 1 ;;
       esac
+      # Pane placement clears the same duplicate-launch isolation the
+      # presentation recovery path applies before anything is placed: an
+      # existing journal or metadata for this id may record a still-live
+      # endpoint from the other placement (the task predates a
+      # config/herdr-crew-placement flip), and publishing a second endpoint
+      # would overwrite that meta and orphan its agent. Only a positively dead
+      # or agent-free prior endpoint may proceed, exactly as on the flat path.
+      if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
+        spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" || {
+          echo "error: herdr pane placement could not acquire its session lock; refusing a concurrent resume" >&2
+          exit 1
+        }
+        if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
+          herdr_projection_existing_meta_allows_flat "$STATE/$ID.meta" || exit 1
+        fi
+        fm_backend_herdr_projection_recovery_allows_flat \
+          "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" || exit 1
+        spawn_herdr_presentation_order_lock_release
+      elif [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
+        herdr_projection_existing_meta_allows_flat "$STATE/$ID.meta" || exit 1
+      fi
       HERDR_WORKSPACE_ID=$FM_BACKEND_HERDR_LAUNCHER_WORKSPACE_ID
       HERDR_SEEDED_DEFAULT_TAB_ID=""
       HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_split_task \

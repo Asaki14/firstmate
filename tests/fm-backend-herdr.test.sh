@@ -4213,14 +4213,16 @@ herdr_split_responses() {  # <resp-dir> <before-json> <labels-json> <layout-json
   local resp=$1
   printf '%s\n' "$2" > "$resp/1.out"   # pane list: panes before the split
   printf '%s\n' "$3" > "$resp/2.out"   # pane list: labels in the tab
-  printf '%s\n' "$4" > "$resp/3.out"   # pane layout --pane <launcher>
-  printf '%s\n' "$5" > "$resp/4.out"   # pane split
-  printf '%s\n' "$6" > "$resp/5.out"   # pane list: panes after the split
-  printf '%s\n' "$7" > "$resp/6.out"   # pane get <new>
-  [ -n "${8:-}" ] && printf '%s\n' "$8" > "$resp/8.out"  # pane get after rename
+  printf '%s\n' "$HERDR_SPLIT_TABS" > "$resp/3.out"  # tab list: workspace-wide duplicate scan
+  printf '%s\n' "$4" > "$resp/4.out"   # pane layout --pane <launcher>
+  printf '%s\n' "$5" > "$resp/5.out"   # pane split
+  printf '%s\n' "$6" > "$resp/6.out"   # pane list: panes after the split
+  printf '%s\n' "$7" > "$resp/7.out"   # pane get <new>
+  [ -n "${8:-}" ] && printf '%s\n' "$8" > "$resp/9.out"  # pane get after rename
   return 0
 }
 
+HERDR_SPLIT_TABS='{"result":{"tabs":[{"tab_id":"w3:t1","label":"captain"}]}}'
 HERDR_SPLIT_BEFORE='{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3","label":"captain"}]}}'
 HERDR_SPLIT_NO_LABELS='{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"}]}}'
 HERDR_SPLIT_LAYOUT='{"result":{"layout":{"workspace_id":"w3","tab_id":"w3:t1","panes":[{"pane_id":"w3:p1","focused":true,"rect":{"x":0,"y":0,"width":200,"height":50}}]}}}'
@@ -4368,20 +4370,55 @@ test_split_task_refuses_a_live_same_labeled_pane_and_replaces_a_husk() {
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3","label":"captain"},{"pane_id":"w3:p5","tab_id":"w3:t1","workspace_id":"w3","label":"fm-task-cp"}]}}' > "$dir/responses/2.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w3:p5","tab_id":"w3:t1","workspace_id":"w3"}}}' > "$dir/responses/3.out"
   printf '%s\n' '{"error":{"code":"agent_not_found"}}' > "$dir/responses/4.out"
-  printf '%s\n' "$HERDR_SPLIT_LAYOUT" > "$dir/responses/5.out"
-  printf '%s\n' "$HERDR_SPLIT_RESPONSE" > "$dir/responses/6.out"
-  printf '%s\n' "$HERDR_SPLIT_AFTER" > "$dir/responses/7.out"
-  printf '%s\n' "$HERDR_SPLIT_GET" > "$dir/responses/8.out"
-  printf '%s\n' "$HERDR_SPLIT_GET_LABELED" > "$dir/responses/10.out"
-  # 12: the labels left in the tab once the husk pane is gone - only the
+  printf '%s\n' "$HERDR_SPLIT_TABS" > "$dir/responses/5.out"
+  printf '%s\n' "$HERDR_SPLIT_LAYOUT" > "$dir/responses/6.out"
+  printf '%s\n' "$HERDR_SPLIT_RESPONSE" > "$dir/responses/7.out"
+  printf '%s\n' "$HERDR_SPLIT_AFTER" > "$dir/responses/8.out"
+  printf '%s\n' "$HERDR_SPLIT_GET" > "$dir/responses/9.out"
+  printf '%s\n' "$HERDR_SPLIT_GET_LABELED" > "$dir/responses/11.out"
+  # 13: the labels left in the tab once the husk pane is gone - only the
   # replacement may still carry fm-<id>.
-  printf '%s\n' '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3","label":"captain"},{"pane_id":"w3:p9","tab_id":"w3:t1","workspace_id":"w3","label":"fm-task-cp"}]}}' > "$dir/responses/12.out"
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3","label":"captain"},{"pane_id":"w3:p9","tab_id":"w3:t1","workspace_id":"w3","label":"fm-task-cp"}]}}' > "$dir/responses/13.out"
   out=$(herdr_split_run "$dir")
   status=$?
   [ "$status" -eq 0 ] || fail "a confirmed husk must be replaced, not refused: $out"
   assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w3:p5' "the husk pane was not closed after the replacement existed"
   assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w3:p1' "husk replacement must never close the launcher's own pane"
   pass "fm_backend_herdr_split_task: refuses a live same-labeled pane and replaces a confirmed restart husk"
+}
+
+test_split_task_refuses_an_unreadable_pane_label_listing() {
+  local dir out status log
+  dir=$(herdr_split_case split-labels-unreadable); log="$dir/log"
+  printf '%s\n' "$HERDR_SPLIT_BEFORE" > "$dir/responses/1.out"
+  printf '%s\n' 'not json at all' > "$dir/responses/2.out"
+  out=$(herdr_split_run "$dir")
+  status=$?
+  [ "$status" -ne 0 ] || fail "an unreadable pane label listing must refuse the spawn"
+  assert_contains "$out" "duplicates cannot be checked" "the refusal did not explain that the duplicate check was impossible"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split' "an unreadable label listing must refuse before splitting anything"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' "an unreadable label listing must close nothing"
+  pass "fm_backend_herdr_split_task: an unreadable pane label listing refuses instead of passing as no-duplicate"
+}
+
+test_split_task_refuses_a_live_same_labeled_tab_elsewhere_in_the_workspace() {
+  local dir out status log
+  dir=$(herdr_split_case split-duplicate-workspace-tab); log="$dir/log"
+  printf '%s\n' "$HERDR_SPLIT_BEFORE" > "$dir/responses/1.out"
+  printf '%s\n' "$HERDR_SPLIT_NO_LABELS" > "$dir/responses/2.out"
+  # 3: the launcher's workspace still holds a live fm-<id> task TAB from the
+  # tab topology; 4-6: pane_for_tab and the husk classifier see a working agent.
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","label":"captain"},{"tab_id":"w3:t7","label":"fm-task-cp"}]}}' > "$dir/responses/3.out"
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w3:p7","tab_id":"w3:t7","workspace_id":"w3"}]}}' > "$dir/responses/4.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w3:p7","tab_id":"w3:t7","workspace_id":"w3"}}}' > "$dir/responses/5.out"
+  printf '%s\n' '{"result":{"agent":{"agent_status":"working"}}}' > "$dir/responses/6.out"
+  out=$(herdr_split_run "$dir")
+  status=$?
+  [ "$status" -ne 0 ] || fail "a live same-labeled task tab elsewhere in the workspace must refuse a second launch"
+  assert_contains "$out" "already exists in workspace" "the refusal did not name the workspace-level duplicate"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split' "a workspace-level duplicate must refuse before splitting anything"
+  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close' "a live duplicate tab must never be closed"
+  pass "fm_backend_herdr_split_task: refuses a live same-labeled task tab left in the launcher's workspace"
 }
 
 test_split_task_refuses_when_the_tab_gained_no_pane_or_too_many() {
@@ -4425,7 +4462,7 @@ test_split_task_rolls_back_only_the_pane_it_created() {
       rename-failed)
         herdr_split_responses "$responses" "$HERDR_SPLIT_BEFORE" "$HERDR_SPLIT_NO_LABELS" \
           "$HERDR_SPLIT_LAYOUT" "$HERDR_SPLIT_RESPONSE" "$HERDR_SPLIT_AFTER" "$HERDR_SPLIT_GET"
-        printf '1\n' > "$responses/7.exit"
+        printf '1\n' > "$responses/8.exit"
         ;;
     esac
     out=$(herdr_split_run "$dir")
@@ -4491,6 +4528,8 @@ test_split_task_splits_the_largest_pane_and_halves_its_wider_side
 test_split_task_falls_back_to_the_launcher_pane_when_layout_is_unreadable
 test_split_task_refuses_a_launcher_pane_outside_the_named_tab
 test_split_task_refuses_a_live_same_labeled_pane_and_replaces_a_husk
+test_split_task_refuses_an_unreadable_pane_label_listing
+test_split_task_refuses_a_live_same_labeled_tab_elsewhere_in_the_workspace
 test_split_task_refuses_when_the_tab_gained_no_pane_or_too_many
 test_split_task_rolls_back_only_the_pane_it_created
 test_kill_closes_only_the_worker_pane_sharing_the_active_tab
