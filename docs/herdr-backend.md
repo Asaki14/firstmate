@@ -35,7 +35,7 @@ Real harness credential tests remain opt-in rather than part of default CI.
 
 ## Watching and task containers
 
-The ordinary topology puts one task tab per endpoint in the exact workspace of the Firstmate or secondmate that launches it.
+The ordinary topology puts one task tab per endpoint in the exact workspace of the Firstmate or secondmate that launches it, unless the home selects the pane placement in [Crew placement](#crew-placement).
 When the launcher has no Herdr workspace to inherit, the adapter maintains one durable home-labeled workspace instead.
 The primary home label is `firstmate`.
 A secondmate home label is `2ndmate-<secondmate-id>`, derived from its validated `.fm-secondmate-home` marker.
@@ -66,6 +66,34 @@ Recovery and list-live still scan the first workspace matching the home label, b
 Existing task operations use recorded endpoint ids and do not move a live task when labels change.
 The per-home workspace is reused while it has task tabs.
 Closing its last tab can remove the workspace, and the next spawn recreates it.
+
+## Crew placement
+
+The endpoint a crewmate or scout gets is a new task tab by default, and can instead be a pane split off inside the launching agent's own tab.
+A home selects that with local gitignored `config/herdr-crew-placement`: an absent file or `tab` keeps the topology above unchanged, and `pane` splits the Firstmate or secondmate pane that launched the worker.
+Values are compared with whitespace stripped and case ignored.
+Unlike the purely visual presentation preference, this file decides where a worker endpoint is created, so an unrecognized or empty value refuses the spawn with an actionable error instead of choosing a placement nobody asked for.
+The setting is inherited into secondmate homes through the normal configuration-convergence owner, so a secondmate's own crewmates split that secondmate agent's tab.
+A `--secondmate` launch itself always uses tab placement, because it stands up another home's own workspace and has no launcher pane there to split.
+
+Pane placement uses the same verified launcher identity as launcher-bound workspace placement and trusts no label.
+It refuses, before any endpoint exists, when this process is not running in a Herdr pane, when the claimed launcher identity is unreadable, contradictory, stale, or from another session, when the running client's own schema does not carry `pane.split` and `pane.rename` in the shape the adapter sends, or when the split fails.
+None of those refusals fall back to the tab topology.
+
+Placement inside the tab is a visual nicety rather than a safety boundary: Firstmate reads Herdr's own per-tab rectangles and splits the largest pane, halving its wider dimension, so repeated spawns tile the tab instead of shaving the launcher's own pane in half each time.
+An unreadable layout falls back to splitting the launcher's pane to the right, which is still pane placement.
+The new pane is identified by diffing the tab's own pane list around the split rather than by trusting one response field: exactly one new pane must appear, a pane id in the split response must be that same pane, and the pane must read back inside the launcher's exact tab and workspace.
+It is then labeled `fm-<id>`, which is what makes it discoverable by list-live and by a bare selector, and a pane that cannot be verified, cannot carry that label, or lands anywhere else is closed again rather than published.
+Recovery, list-live, bare-selector resolution, composer reads, steering, peeking, native agent state, and busy state all work unchanged because the recorded endpoint is still an exact `<session>:<pane-id>`; list-live reads the `fm-<id>` label off the pane for this placement and off the tab for the other one.
+A restored agent-less same-labeled pane after a Herdr restart is replaced exactly as a restored task tab is, with the replacement created before the husk is closed.
+
+Pane placement and presentation spaces are two answers to the same question and never compose.
+Pane placement suppresses the projection for an unconfigured or opted-out home, and an explicit `config/herdr-presentation-spaces` value of `on` alongside `config/herdr-crew-placement=pane` is a configuration conflict that refuses the spawn rather than letting one silently win.
+
+Cleanup needs no separate path and gains no new authority.
+Teardown closes the exact recorded worker pane and confirms only that pane gone, so the launcher's own pane and the shared tab are never closed.
+The focus-safe workspace-emptying plan is inapplicable here by construction rather than skipped: it exists only for a close that would empty a workspace, and a pane-placed worker always shares its tab with the launcher's own surviving pane, so the tab keeps at least one pane and the workspace cannot be emptied.
+The close therefore takes the ordinary confirmed explicit-close path, including when the worker's tab is the captain's active tab, which is the normal case for this placement; it moves focus only within that tab and removes nothing else.
 
 ## Presentation spaces
 

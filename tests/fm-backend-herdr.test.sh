@@ -4200,9 +4200,301 @@ test_wait_transition_clean_timeout_returns_1() {
   pass "fm_backend_herdr_wait_transition: stock macOS Bash clean timeout closes fd 9 and returns 1"
 }
 
+# --- crew placement: a worker pane inside the launcher's own tab -------------
+#
+# docs/herdr-backend.md "Crew placement" owns the contract. These cases pin the
+# three things that placement must never get wrong: which placement a config
+# value selects, that the published endpoint is a verified new pane inside the
+# launcher's exact tab, and that every refusal closes the pane it created and
+# nothing else - never the launcher's own pane and never the shared tab.
+
+# A pane-split scenario's canned responses, in the order split_task issues them.
+herdr_split_responses() {  # <resp-dir> <before-json> <labels-json> <layout-json> <split-json> <after-json> <get-json> [<get-after-rename-json>]
+  local resp=$1
+  printf '%s\n' "$2" > "$resp/1.out"   # pane list: panes before the split
+  printf '%s\n' "$3" > "$resp/2.out"   # pane list: labels in the tab
+  printf '%s\n' "$4" > "$resp/3.out"   # pane layout --pane <launcher>
+  printf '%s\n' "$5" > "$resp/4.out"   # pane split
+  printf '%s\n' "$6" > "$resp/5.out"   # pane list: panes after the split
+  printf '%s\n' "$7" > "$resp/6.out"   # pane get <new>
+  [ -n "${8:-}" ] && printf '%s\n' "$8" > "$resp/8.out"  # pane get after rename
+  return 0
+}
+
+HERDR_SPLIT_BEFORE='{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3","label":"captain"}]}}'
+HERDR_SPLIT_NO_LABELS='{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"}]}}'
+HERDR_SPLIT_LAYOUT='{"result":{"layout":{"workspace_id":"w3","tab_id":"w3:t1","panes":[{"pane_id":"w3:p1","focused":true,"rect":{"x":0,"y":0,"width":200,"height":50}}]}}}'
+HERDR_SPLIT_RESPONSE='{"result":{"type":"pane_info","pane":{"pane_id":"w3:p9","tab_id":"w3:t1","workspace_id":"w3"}}}'
+HERDR_SPLIT_AFTER='{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p9","tab_id":"w3:t1","workspace_id":"w3"}]}}'
+HERDR_SPLIT_GET='{"result":{"pane":{"pane_id":"w3:p9","tab_id":"w3:t1","workspace_id":"w3"}}}'
+HERDR_SPLIT_GET_LABELED='{"result":{"pane":{"pane_id":"w3:p9","tab_id":"w3:t1","workspace_id":"w3","label":"fm-task-cp"}}}'
+
+herdr_split_run() {  # <dir> -> echoes split_task stdout+stderr; sets no globals
+  local dir=$1 fb
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$dir/log" FM_HERDR_RESPONSES="$dir/responses" \
+    bash -c '. "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_split_task fmtest w3:p1 w3:t1 w3 fm-task-cp /tmp/proj' "$ROOT" 2>&1
+}
+
+herdr_split_case() {  # <name> -> echoes the case dir, with an empty log/responses
+  local name=$1 dir
+  dir="$TMP_ROOT/$name"; mkdir -p "$dir/responses"; : > "$dir/log"
+  printf '%s\n' "$dir"
+}
+
+test_crew_placement_config_selects_a_placement_or_refuses() {
+  local dir config got status
+  dir="$TMP_ROOT/crew-placement-config"; config="$dir/config"; mkdir -p "$config"
+  placement() {
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_crew_placement "$1"' "$ROOT" "$1" 2>/dev/null
+  }
+  got=$(placement "$config")
+  [ "$got" = tab ] || fail "an absent file must keep the default tab placement, got '$got'"
+  printf 'tab\n' > "$config/herdr-crew-placement"
+  got=$(placement "$config")
+  [ "$got" = tab ] || fail "an explicit tab must report tab, got '$got'"
+  printf '  PANE \n' > "$config/herdr-crew-placement"
+  got=$(placement "$config")
+  [ "$got" = pane ] || fail "the value must be read case-folded and whitespace-stripped, got '$got'"
+  printf 'panes\n' > "$config/herdr-crew-placement"
+  got=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_crew_placement "$1"' "$ROOT" "$config" 2>&1)
+  status=$?
+  [ "$status" -eq 3 ] || fail "an unrecognized placement must be an actionable error, got status $status"
+  assert_contains "$got" 'unrecognized value' "the placement error did not name the rejected value"
+  : > "$config/herdr-crew-placement"
+  bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_crew_placement "$1"' "$ROOT" "$config" >/dev/null 2>&1
+  status=$?
+  [ "$status" -eq 3 ] || fail "an empty placement file cannot say which placement was meant and must refuse, got $status"
+  pass "fm_backend_herdr_crew_placement: selects tab or pane and refuses anything it cannot read as one"
+}
+
+test_split_capable_gates_on_the_running_clients_own_schema() {
+  local dir log resp fb status
+  dir=$(herdr_split_case split-capable); log="$dir/log"; resp="$dir/responses"
+  # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
+  printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"pane.split"}}},{"properties":{"method":{"const":"pane.rename"}}}],"$defs":{"PaneSplitParams":{"required":["direction"],"properties":{"target_pane_id":{},"cwd":{},"direction":{}}}}}}}' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_split_capable fmtest' "$ROOT"
+  expect_code 0 $? "a schema carrying pane.split and pane.rename must be capable"
+  assert_contains "$(cat "$log")" $'\x1f''api'$'\x1f''schema'$'\x1f''--json' "split_capable did not read the client schema"
+  dir=$(herdr_split_case split-incapable); log="$dir/log"; resp="$dir/responses"
+  # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
+  printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"pane.close"}}}],"$defs":{}}}}' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  ( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_split_capable fmtest' "$ROOT" )
+  status=$?
+  expect_code 3 "$status" "a schema without pane.split must be reported unsupported, not assumed"
+  pass "fm_backend_herdr_split_capable: verifies the split method against the running client's own schema"
+}
+
+test_split_task_places_a_labeled_pane_in_the_launchers_exact_tab() {
+  local dir out log
+  dir=$(herdr_split_case split-happy); log="$dir/log"
+  herdr_split_responses "$dir/responses" "$HERDR_SPLIT_BEFORE" "$HERDR_SPLIT_NO_LABELS" \
+    "$HERDR_SPLIT_LAYOUT" "$HERDR_SPLIT_RESPONSE" "$HERDR_SPLIT_AFTER" "$HERDR_SPLIT_GET" \
+    "$HERDR_SPLIT_GET_LABELED"
+  out=$(herdr_split_run "$dir")
+  [ "$out" = 'w3:t1 w3:p9' ] || fail "split_task should publish the launcher's tab and the new pane, got '$out'"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split'$'\x1f''w3:p1'$'\x1f''--direction'$'\x1f''right'$'\x1f''--cwd'$'\x1f''/tmp/proj'$'\x1f''--no-focus' \
+    "split_task did not split the launcher's own pane sideways in the task's project directory"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w3:p9'$'\x1f''fm-task-cp' \
+    "split_task did not label the new pane fm-<id>"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' "a successful split must close nothing"
+  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "pane placement must never create a task tab"
+  pass "fm_backend_herdr_split_task: publishes a verified, labeled pane inside the launcher's exact tab"
+}
+
+test_split_task_splits_the_largest_pane_and_halves_its_wider_side() {
+  local dir out log
+  dir=$(herdr_split_case split-tiling); log="$dir/log"
+  herdr_split_responses "$dir/responses" \
+    '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p2","tab_id":"w3:t1","workspace_id":"w3"}]}}' \
+    "$HERDR_SPLIT_NO_LABELS" \
+    '{"result":{"layout":{"workspace_id":"w3","tab_id":"w3:t1","panes":[{"pane_id":"w3:p1","focused":true,"rect":{"x":0,"y":0,"width":100,"height":20}},{"pane_id":"w3:p2","focused":false,"rect":{"x":100,"y":0,"width":100,"height":60}}]}}}' \
+    "$HERDR_SPLIT_RESPONSE" \
+    '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p2","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p9","tab_id":"w3:t1","workspace_id":"w3"}]}}' \
+    "$HERDR_SPLIT_GET" "$HERDR_SPLIT_GET_LABELED"
+  out=$(herdr_split_run "$dir")
+  [ "$out" = 'w3:t1 w3:p9' ] || fail "the tiling case should still publish the new pane, got '$out'"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split'$'\x1f''w3:p2'$'\x1f''--direction'$'\x1f''down' \
+    "split_task did not split the largest pane along its wider side"
+  pass "fm_backend_herdr_split_task: tiles the tab by halving the largest pane's wider side"
+}
+
+test_split_task_falls_back_to_the_launcher_pane_when_layout_is_unreadable() {
+  local dir out log
+  dir=$(herdr_split_case split-layout-unreadable); log="$dir/log"
+  herdr_split_responses "$dir/responses" "$HERDR_SPLIT_BEFORE" "$HERDR_SPLIT_NO_LABELS" \
+    'not json at all' "$HERDR_SPLIT_RESPONSE" "$HERDR_SPLIT_AFTER" "$HERDR_SPLIT_GET" \
+    "$HERDR_SPLIT_GET_LABELED"
+  out=$(herdr_split_run "$dir")
+  [ "$out" = 'w3:t1 w3:p9' ] || fail "an unreadable layout must still place the worker as a pane, got '$out'"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split'$'\x1f''w3:p1'$'\x1f''--direction'$'\x1f''right' \
+    "an unreadable layout should fall back to splitting the launcher's own pane to the right"
+  pass "fm_backend_herdr_split_task: an unreadable layout degrades to a launcher-pane split, never to a task tab"
+}
+
+test_split_task_refuses_a_launcher_pane_outside_the_named_tab() {
+  local dir out status log
+  dir=$(herdr_split_case split-foreign-launcher); log="$dir/log"
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w3:p7","tab_id":"w3:t1","workspace_id":"w3"}]}}' > "$dir/responses/1.out"
+  out=$(herdr_split_run "$dir")
+  status=$?
+  [ "$status" -ne 0 ] || fail "a launcher pane missing from its own tab must refuse"
+  assert_contains "$out" "is not in tab" "the refusal did not name the inconsistent parent identity"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split' "an inconsistent parent identity must refuse before splitting anything"
+  pass "fm_backend_herdr_split_task: refuses a launcher identity its own tab does not contain"
+}
+
+test_split_task_refuses_a_live_same_labeled_pane_and_replaces_a_husk() {
+  local dir out status log
+  dir=$(herdr_split_case split-duplicate-live); log="$dir/log"
+  printf '%s\n' "$HERDR_SPLIT_BEFORE" > "$dir/responses/1.out"
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3","label":"captain"},{"pane_id":"w3:p5","tab_id":"w3:t1","workspace_id":"w3","label":"fm-task-cp"}]}}' > "$dir/responses/2.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w3:p5","tab_id":"w3:t1","workspace_id":"w3"}}}' > "$dir/responses/3.out"
+  printf '%s\n' '{"result":{"agent":{"agent_status":"working"}}}' > "$dir/responses/4.out"
+  out=$(herdr_split_run "$dir")
+  status=$?
+  [ "$status" -ne 0 ] || fail "a live same-labeled pane must refuse a second launch"
+  assert_contains "$out" "already exists" "the duplicate refusal did not name the existing pane label"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split' "a duplicate refusal must not split anything"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' "a duplicate refusal must never close a live pane"
+
+  dir=$(herdr_split_case split-duplicate-husk); log="$dir/log"
+  printf '%s\n' "$HERDR_SPLIT_BEFORE" > "$dir/responses/1.out"
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3","label":"captain"},{"pane_id":"w3:p5","tab_id":"w3:t1","workspace_id":"w3","label":"fm-task-cp"}]}}' > "$dir/responses/2.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w3:p5","tab_id":"w3:t1","workspace_id":"w3"}}}' > "$dir/responses/3.out"
+  printf '%s\n' '{"error":{"code":"agent_not_found"}}' > "$dir/responses/4.out"
+  printf '%s\n' "$HERDR_SPLIT_LAYOUT" > "$dir/responses/5.out"
+  printf '%s\n' "$HERDR_SPLIT_RESPONSE" > "$dir/responses/6.out"
+  printf '%s\n' "$HERDR_SPLIT_AFTER" > "$dir/responses/7.out"
+  printf '%s\n' "$HERDR_SPLIT_GET" > "$dir/responses/8.out"
+  printf '%s\n' "$HERDR_SPLIT_GET_LABELED" > "$dir/responses/10.out"
+  # 12: the labels left in the tab once the husk pane is gone - only the
+  # replacement may still carry fm-<id>.
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3","label":"captain"},{"pane_id":"w3:p9","tab_id":"w3:t1","workspace_id":"w3","label":"fm-task-cp"}]}}' > "$dir/responses/12.out"
+  out=$(herdr_split_run "$dir")
+  status=$?
+  [ "$status" -eq 0 ] || fail "a confirmed husk must be replaced, not refused: $out"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w3:p5' "the husk pane was not closed after the replacement existed"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w3:p1' "husk replacement must never close the launcher's own pane"
+  pass "fm_backend_herdr_split_task: refuses a live same-labeled pane and replaces a confirmed restart husk"
+}
+
+test_split_task_refuses_when_the_tab_gained_no_pane_or_too_many() {
+  local dir out status log
+  dir=$(herdr_split_case split-gained-none); log="$dir/log"
+  herdr_split_responses "$dir/responses" "$HERDR_SPLIT_BEFORE" "$HERDR_SPLIT_NO_LABELS" \
+    "$HERDR_SPLIT_LAYOUT" "$HERDR_SPLIT_RESPONSE" "$HERDR_SPLIT_BEFORE" "$HERDR_SPLIT_GET"
+  out=$(herdr_split_run "$dir")
+  status=$?
+  [ "$status" -ne 0 ] || fail "a split that added no pane must refuse to publish an endpoint"
+  assert_contains "$out" "gained no pane" "the refusal did not report the missing pane"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' "a split that added nothing must close nothing"
+
+  dir=$(herdr_split_case split-gained-two); log="$dir/log"
+  herdr_split_responses "$dir/responses" "$HERDR_SPLIT_BEFORE" "$HERDR_SPLIT_NO_LABELS" \
+    "$HERDR_SPLIT_LAYOUT" "$HERDR_SPLIT_RESPONSE" \
+    '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p8","tab_id":"w3:t1","workspace_id":"w3"},{"pane_id":"w3:p9","tab_id":"w3:t1","workspace_id":"w3"}]}}' \
+    "$HERDR_SPLIT_GET"
+  out=$(herdr_split_run "$dir")
+  status=$?
+  [ "$status" -ne 0 ] || fail "an ambiguous split must refuse to claim one of several new panes"
+  assert_contains "$out" "gained 2 panes" "the ambiguous refusal did not report what it saw"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' "an ambiguous split must close nothing at all"
+  pass "fm_backend_herdr_split_task: refuses, and closes nothing, when the tab's own pane list is not exactly one new pane"
+}
+
+test_split_task_rolls_back_only_the_pane_it_created() {
+  local dir out status log case_name responses
+  for case_name in mismatch wrong-tab rename-failed; do
+    dir=$(herdr_split_case "split-rollback-$case_name"); log="$dir/log"; responses="$dir/responses"
+    case "$case_name" in
+      mismatch)
+        herdr_split_responses "$responses" "$HERDR_SPLIT_BEFORE" "$HERDR_SPLIT_NO_LABELS" \
+          "$HERDR_SPLIT_LAYOUT" '{"result":{"pane":{"pane_id":"w3:p4"}}}' "$HERDR_SPLIT_AFTER" "$HERDR_SPLIT_GET"
+        ;;
+      wrong-tab)
+        herdr_split_responses "$responses" "$HERDR_SPLIT_BEFORE" "$HERDR_SPLIT_NO_LABELS" \
+          "$HERDR_SPLIT_LAYOUT" "$HERDR_SPLIT_RESPONSE" "$HERDR_SPLIT_AFTER" \
+          '{"result":{"pane":{"pane_id":"w3:p9","tab_id":"w9:t9","workspace_id":"w9"}}}'
+        ;;
+      rename-failed)
+        herdr_split_responses "$responses" "$HERDR_SPLIT_BEFORE" "$HERDR_SPLIT_NO_LABELS" \
+          "$HERDR_SPLIT_LAYOUT" "$HERDR_SPLIT_RESPONSE" "$HERDR_SPLIT_AFTER" "$HERDR_SPLIT_GET"
+        printf '1\n' > "$responses/7.exit"
+        ;;
+    esac
+    out=$(herdr_split_run "$dir")
+    status=$?
+    [ "$status" -ne 0 ] || fail "the $case_name case must refuse to publish an unverified endpoint"
+    assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w3:p9' "the $case_name case did not close the pane it had just created"
+    assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w3:p1' "the $case_name case closed the launcher's own pane"
+    assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close' "the $case_name case closed a tab"
+    assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''close' "the $case_name case closed a workspace"
+  done
+  pass "fm_backend_herdr_split_task: every unverifiable outcome closes exactly the pane it created and nothing else"
+}
+
+test_kill_closes_only_the_worker_pane_sharing_the_active_tab() {
+  local dir log resp fb out status
+  dir=$(herdr_split_case split-kill-active-tab); log="$dir/log"; resp="$dir/responses"
+  # 1-2: focus snapshot - the launcher's tab IS the captain's active tab, which
+  # is the normal case for pane placement.
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w3","active_tab_id":"w3:t1","focused":true}]}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' > "$resp/2.out"
+  # 3: the exact worker pane; 5: its structured absence after the close.
+  printf '%s\n' "$HERDR_SPLIT_GET" > "$resp/3.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_presentation_session_lock_path() { printf "/tmp/fm-herdr-test-lock"; }
+      fm_lock_try_acquire() { return 0; }
+      fm_lock_release() { return 0; }
+      fm_backend_herdr_kill fmtest:w3:p9
+    ' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -eq 0 ] || fail "killing a pane-placed worker must stay best-effort: $out"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w3:p9' "the worker pane was not closed"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w3:p1' "cleanup closed the launcher's own pane"
+  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close' "cleanup closed the shared tab"
+  assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''close' "cleanup closed a workspace"
+  pass "fm_backend_herdr_kill: a worker sharing the captain's active tab is removed by closing exactly its own pane"
+}
+
+test_list_live_reports_pane_placed_workers_by_pane_label() {
+  local dir log resp fb out
+  dir=$(herdr_split_case list-live-pane-placed); log="$dir/log"; resp="$dir/responses"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w3","label":"firstmate"}]}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","label":"captain"}]}}' > "$resp/2.out"
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1","label":"captain"},{"pane_id":"w3:p9","tab_id":"w3:t1","label":"fm-task-cp"}]}}' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$TMP_ROOT" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_list_live fmtest' "$ROOT")
+  [ "$out" = $'fmtest:w3:p9\tfm-task-cp' ] \
+    || fail "list_live should report a pane-placed worker by its own fm-<id> pane label, got '$out'"
+  pass "fm_backend_herdr_list_live: discovers pane-placed workers by their fm-<id> pane label"
+}
+
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
 
+test_crew_placement_config_selects_a_placement_or_refuses
+test_split_capable_gates_on_the_running_clients_own_schema
+test_split_task_places_a_labeled_pane_in_the_launchers_exact_tab
+test_split_task_splits_the_largest_pane_and_halves_its_wider_side
+test_split_task_falls_back_to_the_launcher_pane_when_layout_is_unreadable
+test_split_task_refuses_a_launcher_pane_outside_the_named_tab
+test_split_task_refuses_a_live_same_labeled_pane_and_replaces_a_husk
+test_split_task_refuses_when_the_tab_gained_no_pane_or_too_many
+test_split_task_rolls_back_only_the_pane_it_created
+test_kill_closes_only_the_worker_pane_sharing_the_active_tab
+test_list_live_reports_pane_placed_workers_by_pane_label
 test_version_check_accepts_current_protocol
 test_version_check_refuses_old_protocol
 test_version_check_refuses_missing_herdr

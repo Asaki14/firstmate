@@ -26,6 +26,14 @@
 # focus, and agent-absence checks all agree under the session lock.
 # Every ambiguous recovered launch uses the default flat home workspace when
 # duplicate-agent risk is independently absent.
+# A home can instead place its crewmates and scouts as PANES inside the
+# launching agent's own tab by writing "pane" into
+# config/herdr-crew-placement (fm_backend_herdr_crew_placement,
+# fm_backend_herdr_split_task, docs/herdr-backend.md "Crew placement"). That
+# placement needs the same verified launcher identity, publishes the same exact
+# session:pane endpoint, is mutually exclusive with the presentation
+# projection, and never applies to a --secondmate launch, which stands up
+# another home's own workspace by design.
 # Target resolution stays parallel to the tmux adapter in both layouts.
 # Projected create, move, and cleanup operations capture the named session's
 # exact active workspace and tab. On Herdr 0.7.5, an explicit close that
@@ -335,6 +343,62 @@ fm_backend_herdr_presentation_enabled() {  # <config-dir> [<state-dir>]
     on) return 0 ;;
   esac
   fm_backend_herdr_presentation_default_supported "$state_dir"
+}
+
+# The config item a home writes to place its crewmates and scouts as panes
+# inside the launching agent's own tab instead of one tab per task.
+FM_BACKEND_HERDR_CREW_PLACEMENT_CONFIG="herdr-crew-placement"
+
+# fm_backend_herdr_crew_placement <config-dir>: the single owner of
+# config/herdr-crew-placement parsing (docs/herdr-backend.md "Crew placement").
+# Echoes exactly one of "tab" (the default topology: one task tab per endpoint)
+# or "pane" (split the launching agent's own pane inside its own tab).
+# Values are read with the same whole-file whitespace-stripped, case-folded
+# convention as config/herdr-presentation-spaces, and an absent file is "tab",
+# so a home that configured nothing keeps the historical behavior byte for byte.
+#
+# Unlike the purely visual presentation preference, this item decides WHERE a
+# worker endpoint is created, so an unrecognized value is an actionable error
+# (return 3) rather than a warning that silently selects a placement the
+# operator did not ask for - the same refuse-rather-than-guess rule
+# fm_backend_herdr_workspace_ensure applies to an ambiguous parent workspace.
+# An empty file is also an error: the presence-based opt-in shape belongs to the
+# presentation item's history, and here it cannot say which of two placements
+# was meant.
+fm_backend_herdr_crew_placement() {  # <config-dir>
+  local config_dir=${1:-} file value
+  [ -n "$config_dir" ] || { printf 'tab\n'; return 0; }
+  file="$config_dir/$FM_BACKEND_HERDR_CREW_PLACEMENT_CONFIG"
+  [ -f "$file" ] || { printf 'tab\n'; return 0; }
+  value=$(tr -d '[:space:]' < "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]') || value=""
+  case "$value" in
+    tab) printf 'tab\n' ;;
+    pane) printf 'pane\n' ;;
+    *)
+      echo "error: $file: unrecognized value \"$value\"; write \"tab\" for one task tab per worker or \"pane\" to split the launching agent's own tab" >&2
+      return 3
+      ;;
+  esac
+}
+
+# fm_backend_herdr_split_capable <session>: the structural capability gate for
+# pane placement. Verified against the running client's own bundled schema
+# rather than against a release number, because `pane.split` is the protocol
+# fact placement depends on and a version comparison would only be a proxy for
+# it. Silent; the caller owns its wording.
+# Return codes: 1 herdr/jq missing, 2 schema unreadable, 3 the method or its
+# parameter schema is not the shape this adapter sends.
+fm_backend_herdr_split_capable() {  # <session>
+  local session=$1 schema
+  fm_backend_herdr_tool_check >/dev/null 2>&1 || return 1
+  schema=$(fm_backend_herdr_cli "$session" api schema --json 2>/dev/null) || return 2
+  printf '%s' "$schema" | jq -e '
+    any(.schemas.request.oneOf[]?; .properties.method.const == "pane.split")
+    and (.schemas.request["$defs"].PaneSplitParams.required == ["direction"])
+    and ((.schemas.request["$defs"].PaneSplitParams.properties | has("target_pane_id")) == true)
+    and ((.schemas.request["$defs"].PaneSplitParams.properties | has("cwd")) == true)
+    and any(.schemas.request.oneOf[]?; .properties.method.const == "pane.rename")
+  ' >/dev/null 2>&1 || return 3
 }
 
 # fm_backend_herdr_workspace_label: the per-firstmate-HOME herdr workspace
@@ -2047,6 +2111,238 @@ EOF
   printf '%s %s' "$tab_id" "$pane_id"
 }
 
+# --- pane placement: a worker beside the launcher, inside its own tab --------
+#
+# The pane-placement topology (config/herdr-crew-placement=pane) keeps every
+# invariant the tab topology has, with one deliberate difference: the endpoint
+# is a pane split off inside the LAUNCHER's own tab instead of a new tab, so the
+# captain watches the worker next to the agent that launched it.
+#
+# Everything downstream is unchanged because the recorded endpoint stays an
+# exact "<session>:<pane-id>": send, capture, composer reads, agent state,
+# busy state, and kill all address that pane id and never the tab.
+#
+# Cleanup safety argument (the reason no new teardown path is needed):
+# fm_backend_herdr_kill_serialized's focus-safe emptying plan exists ONLY for a
+# close that would empty a workspace, which is the sole shape Herdr's pre-0.8.0
+# focus defect touches. A pane-placed worker shares its tab with the launching
+# firstmate or secondmate agent's own pane, which is never closed, so the tab
+# retains at least one pane and the workspace can never be emptied by this
+# close. That is why the plan legitimately does not apply here and the ordinary
+# confirmed explicit close is the correct, non-degraded path: the guard that
+# refuses a focus-unsafe close of the ACTIVE tab is bypassed for exactly this
+# case in kill_serialized's fall-through, and it must be, because in pane
+# placement the worker's tab usually IS the active tab, while closing one of its
+# several panes moves focus only within that tab and removes nothing else.
+# Closing the launcher's own pane, or the tab, is never a cleanup step: teardown
+# closes the exact recorded pane id and confirms only that pane gone
+# (fm_backend_herdr_endpoint_confirmed_gone).
+
+# fm_backend_herdr_tab_pane_ids: every pane id currently in <tab-id>, one per
+# line, in a stable sorted order so two snapshots can be compared with comm.
+# Empty (and non-zero) when the listing cannot be read or parsed at all, so a
+# caller never mistakes an unreadable listing for an empty tab.
+fm_backend_herdr_tab_pane_ids() {  # <session> <workspace-id> <tab-id>
+  local session=$1 wsid=$2 tab_id=$3 panes
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || return 1
+  printf '%s' "$panes" | jq -e '(.result.panes | type) == "array"' >/dev/null 2>&1 || return 1
+  printf '%s' "$panes" | jq -r --arg tab "$tab_id" \
+    '.result.panes[]? | select(.tab_id == $tab) | .pane_id' 2>/dev/null | LC_ALL=C sort
+}
+
+# fm_backend_herdr_tab_pane_labels: "<pane-id>\t<label>" for every pane in
+# <tab-id> that carries a non-empty label. Used for the duplicate/husk check
+# that mirrors fm_backend_herdr_create_task's tab-label check.
+fm_backend_herdr_tab_pane_labels() {  # <session> <workspace-id> <tab-id>
+  local session=$1 wsid=$2 tab_id=$3 panes
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || return 1
+  printf '%s' "$panes" | jq -e '(.result.panes | type) == "array"' >/dev/null 2>&1 || return 1
+  printf '%s' "$panes" | jq -r --arg tab "$tab_id" '
+    .result.panes[]?
+    | select(.tab_id == $tab)
+    | select((.label | type) == "string" and (.label | length) > 0)
+    | "\(.pane_id)\t\(.label)"' 2>/dev/null
+}
+
+# fm_backend_herdr_split_placement: choose which pane to split and in which
+# direction, echoing "<target-pane-id> <right|down>".
+#
+# Layout is a visual nicety, not a safety boundary, so this is deliberately
+# best-effort: it reads Herdr's own per-tab rectangles and splits the LARGEST
+# pane, halving the widest dimension (a terminal cell is about twice as tall as
+# it is wide, so a pane is "wide enough to split sideways" at width >= 2 *
+# height). Repeated spawns therefore tile the tab evenly instead of shaving the
+# launcher's own pane in half again and again. When the layout cannot be read or
+# parsed, this falls back to splitting the launcher's own pane to the right,
+# which is still pane placement - never a silent return to the tab topology.
+fm_backend_herdr_split_placement() {  # <session> <launcher-pane> <launcher-tab>
+  local session=$1 launcher_pane=$2 tab_id=$3 layout best
+  layout=$(fm_backend_herdr_cli "$session" pane layout --pane "$launcher_pane" 2>/dev/null) || layout=
+  if [ -n "$layout" ]; then
+    best=$(printf '%s' "$layout" | jq -r --arg tab "$tab_id" '
+      select(.result.layout.tab_id == $tab)
+      | [ .result.layout.panes[]?
+          | select((.pane_id | type) == "string")
+          | select((.rect.width | type) == "number" and (.rect.height | type) == "number")
+          | {pane_id, width: .rect.width, height: .rect.height, area: (.rect.width * .rect.height)} ]
+      | select(length > 0)
+      | sort_by([-.area, .pane_id])
+      | .[0]
+      | "\(.pane_id) \(if .width >= (.height * 2) then "right" else "down" end)"
+    ' 2>/dev/null)
+  fi
+  case "$best" in
+    ?*' right'|?*' down') printf '%s' "$best" ;;
+    *) printf '%s right' "$launcher_pane" ;;
+  esac
+}
+
+# fm_backend_herdr_split_rollback: close exactly one pane this adapter just
+# created and can no longer publish. Best-effort and always announced, because
+# leaving an unrecorded worker pane beside the captain is worse than a warning.
+fm_backend_herdr_split_rollback() {  # <session> <pane-id> <reason>
+  local session=$1 pane=$2 reason=$3
+  [ -n "$pane" ] || return 0
+  echo "warning: closing the herdr pane $pane this spawn had just created ($reason)" >&2
+  fm_backend_herdr_cli "$session" pane close "$pane" >/dev/null 2>&1 || {
+    echo "warning: could not close the herdr pane $pane; close it manually" >&2
+    return 1
+  }
+}
+
+# fm_backend_herdr_split_task: create the task's endpoint as a new pane inside
+# the launcher's own verified tab. Echoes "<tab_id> <pane_id>" exactly like
+# fm_backend_herdr_create_task, so bin/fm-spawn.sh's herdr arm consumes either
+# placement identically.
+#
+# The launcher pane, tab, and workspace must already be the exact, verified
+# binding fm_backend_herdr_launcher_identity resolved: this function trusts no
+# label and resolves no parent of its own.
+#
+# The created pane is identified STRUCTURALLY, by diffing the tab's own pane
+# list around the split, rather than by trusting one response field. Exactly one
+# new pane must appear; zero means the split did not happen, and more than one
+# means something else mutated the tab concurrently and no pane can be claimed
+# as this task's. When the response does carry a pane id, it must be that same
+# pane, so a future response-shape change cannot silently publish the wrong
+# endpoint.
+#
+# Duplicate-label handling mirrors fm_backend_herdr_create_task exactly: a live
+# or unreadable same-labeled pane refuses, a confirmed husk (a restored,
+# agent-less pane after a Herdr restart) is replaced, and the replacement is
+# always created BEFORE the husk is closed.
+fm_backend_herdr_split_task() {  # <session> <launcher-pane> <launcher-tab> <launcher-workspace> <label> <cwd>
+  local session=$1 launcher_pane=$2 tab_id=$3 wsid=$4 label=$5 cwd=$6
+  local before after placement target direction out response_pane new_pane created
+  local dup_pane dup_label husk_panes info info_tab info_ws info_label remaining
+
+  before=$(fm_backend_herdr_tab_pane_ids "$session" "$wsid" "$tab_id") || {
+    echo "error: could not list the panes of herdr tab $tab_id (session $session); refusing to split a tab whose contents are unreadable" >&2
+    return 1
+  }
+  case $'\n'"$before"$'\n' in
+    *$'\n'"$launcher_pane"$'\n'*) ;;
+    *)
+      echo "error: herdr launcher pane $launcher_pane is not in tab $tab_id (session $session); refusing to place a worker from an inconsistent parent identity" >&2
+      return 1
+      ;;
+  esac
+
+  husk_panes=""
+  while IFS=$'\t' read -r dup_pane dup_label; do
+    [ -n "$dup_pane" ] || continue
+    [ "$dup_label" = "$label" ] || continue
+    if ! fm_backend_herdr_tab_is_husk "$session" "$dup_pane"; then
+      echo "error: herdr pane '$label' already exists in tab $tab_id (session $session)" >&2
+      return 1
+    fi
+    husk_panes="${husk_panes}${dup_pane}"$'\n'
+  done < <(fm_backend_herdr_tab_pane_labels "$session" "$wsid" "$tab_id" || true)
+
+  placement=$(fm_backend_herdr_split_placement "$session" "$launcher_pane" "$tab_id")
+  target=${placement%% *}
+  direction=${placement##* }
+  out=$(fm_backend_herdr_cli "$session" pane split "$target" \
+    --direction "$direction" --cwd "$cwd" --no-focus 2>/dev/null) || {
+    echo "error: 'herdr pane split' failed for tab $tab_id (session $session); refusing to place this worker anywhere else" >&2
+    return 1
+  }
+  after=$(fm_backend_herdr_tab_pane_ids "$session" "$wsid" "$tab_id") || {
+    echo "error: could not re-read the panes of herdr tab $tab_id (session $session) after splitting it; the new pane is unidentified and must be inspected manually" >&2
+    return 1
+  }
+  created=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -c '[^[:space:]]' || true)
+  new_pane=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep '[^[:space:]]' | head -1)
+  if [ "$created" -eq 0 ]; then
+    echo "error: 'herdr pane split' reported success but tab $tab_id (session $session) gained no pane; refusing to publish an endpoint" >&2
+    return 1
+  fi
+  if [ "$created" -gt 1 ]; then
+    echo "error: herdr tab $tab_id (session $session) gained $created panes during this split; none can be claimed as this task's endpoint, so nothing was closed - inspect the tab manually" >&2
+    return 1
+  fi
+  response_pane=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // .result.root_pane.pane_id // .result.pane_id // empty' 2>/dev/null)
+  if [ -n "$response_pane" ] && [ "$response_pane" != "$new_pane" ]; then
+    fm_backend_herdr_split_rollback "$session" "$new_pane" "herdr reported pane $response_pane but tab $tab_id gained $new_pane" || true
+    echo "error: herdr's split response and the tab's own pane list disagree about the new pane; refusing to publish an ambiguous endpoint" >&2
+    return 1
+  fi
+
+  info=$(fm_backend_herdr_cli "$session" pane get "$new_pane" 2>/dev/null) || {
+    fm_backend_herdr_split_rollback "$session" "$new_pane" "the new pane could not be read back" || true
+    echo "error: herdr pane $new_pane could not be read back after the split; refusing to publish an unverified endpoint" >&2
+    return 1
+  }
+  info_tab=$(printf '%s' "$info" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
+  info_ws=$(printf '%s' "$info" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
+  if [ "$info_tab" != "$tab_id" ] || [ "$info_ws" != "$wsid" ]; then
+    fm_backend_herdr_split_rollback "$session" "$new_pane" "it landed in tab '${info_tab:-unknown}' of workspace '${info_ws:-unknown}', not the launcher's own" || true
+    echo "error: the herdr pane created for '$label' did not land in the launcher's exact tab; refusing to publish it" >&2
+    return 1
+  fi
+
+  # The label is what makes a pane-placed worker discoverable by
+  # fm_backend_herdr_list_live and fm_backend_herdr_resolve_bare_selector, the
+  # same role the fm-<id> tab label plays in the tab topology, so a pane that
+  # cannot carry it is rolled back rather than published half-identified.
+  if ! fm_backend_herdr_cli "$session" pane rename "$new_pane" "$label" >/dev/null 2>&1; then
+    fm_backend_herdr_split_rollback "$session" "$new_pane" "it could not be labeled '$label'" || true
+    echo "error: could not label the herdr pane created for '$label'; refusing to publish an unlabeled endpoint" >&2
+    return 1
+  fi
+  info=$(fm_backend_herdr_cli "$session" pane get "$new_pane" 2>/dev/null) || info=
+  info_label=$(printf '%s' "$info" | jq -r '.result.pane.label // empty' 2>/dev/null)
+  if [ "$info_label" != "$label" ]; then
+    fm_backend_herdr_split_rollback "$session" "$new_pane" "its label read back as '${info_label:-none}'" || true
+    echo "error: the herdr pane created for '$label' does not carry that label; refusing to publish an unlabeled endpoint" >&2
+    return 1
+  fi
+
+  if [ -n "$husk_panes" ]; then
+    while IFS= read -r dup_pane; do
+      [ -n "$dup_pane" ] || continue
+      fm_backend_herdr_cli "$session" pane close "$dup_pane" >/dev/null 2>&1 || true
+    done <<EOF
+$husk_panes
+EOF
+    remaining=$(fm_backend_herdr_tab_pane_labels "$session" "$wsid" "$tab_id") || {
+      echo "error: could not verify herdr husk removal for '$label' in tab $tab_id (session $session)" >&2
+      return 1
+    }
+    remaining=$(printf '%s\n' "$remaining" \
+      | awk -F'\t' -v want="$label" -v keep="$new_pane" '$2 == want && $1 != keep' | wc -l | tr -d ' ')
+    case "$remaining" in
+      0) ;;
+      *)
+        echo "error: failed to remove $remaining preexisting herdr pane(s) labeled '$label' in tab $tab_id (session $session)" >&2
+        return 1
+        ;;
+    esac
+  fi
+
+  printf '%s %s' "$tab_id" "$new_pane"
+}
+
 # fm_backend_herdr_projection_create_task: create one disposable presentation
 # workspace and its normal fm-<id> task tab without looking up, adopting, or
 # reusing any existing workspace.
@@ -2808,6 +3104,13 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
       return 0
     fi
   fi
+  # Fall-through: the ordinary confirmed explicit close. This is the correct
+  # path, not a degraded one, whenever the emptying plan cannot apply - most
+  # often because the target sits in the ACTIVE tab, which is the normal case
+  # for a pane-placed worker sharing the launcher's tab. Closing one pane of a
+  # multi-pane tab empties no workspace, so Herdr's workspace-removal focus
+  # defect is out of scope by construction; see the pane-placement block above
+  # fm_backend_herdr_split_task for the full argument.
   fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane" || true
 }
 
@@ -2999,6 +3302,16 @@ fm_backend_herdr_resolve_bare_selector() {  # <name>
   sessions=$(herdr session list --json 2>/dev/null | jq -r '.sessions[]? | select(.running == true) | .name' 2>/dev/null)
   while IFS= read -r session; do
     [ -n "$session" ] || continue
+    # A pane-placed worker (docs/herdr-backend.md "Crew placement") carries the
+    # fm-<id> label on the PANE, inside a tab labeled for whatever the launching
+    # agent was doing, so the pane search runs first and the tab search below
+    # remains the answer for the tab topology.
+    pane_id=$(fm_backend_herdr_cli "$session" pane list 2>/dev/null \
+      | jq -r --arg want "$name" '.result.panes[]? | select(.label == $want) | .pane_id' 2>/dev/null | head -1)
+    if [ -n "$pane_id" ]; then
+      printf '%s:%s' "$session" "$pane_id"
+      return 0
+    fi
     tabs=$(fm_backend_herdr_cli "$session" tab list 2>/dev/null) || continue
     tab_id=$(printf '%s' "$tabs" | jq -r --arg want "$name" \
       '.result.tabs[]? | select(.label == $want) | .tab_id' 2>/dev/null | head -1)
@@ -3028,7 +3341,7 @@ EOF
 # workspace that does not exist yet simply lists nothing. One
 # "<session>:<pane_id>\t<label>" line per live task tab.
 fm_backend_herdr_list_live() {  # <session>
-  local session=$1 wsid tabs tab_id label pane_id
+  local session=$1 wsid tabs tab_id label pane_id seen=""
   wsid=$(fm_backend_herdr_workspace_find "$session") || return 0
   [ -n "$wsid" ] || return 0
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 0
@@ -3036,8 +3349,23 @@ fm_backend_herdr_list_live() {  # <session>
     [ -n "$tab_id" ] || continue
     pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$tab_id") || continue
     [ -n "$pane_id" ] || continue
+    seen="${seen}${pane_id}"$'\n'
     printf '%s:%s\t%s\n' "$session" "$pane_id" "$label"
   done < <(printf '%s' "$tabs" | jq -r '.result.tabs[]? | select(.label | startswith("fm-")) | "\(.tab_id)\t\(.label)"' 2>/dev/null)
+  # Pane-placed workers (docs/herdr-backend.md "Crew placement") live inside a
+  # tab this home did not create, so the same fm-<id> label is read off the PANE
+  # instead. A tab-placed worker's pane carries no label, so the two scans
+  # cannot report the same endpoint twice; the dedupe below is defense in depth
+  # against a pane that was labeled by hand as well.
+  while IFS=$'\t' read -r pane_id label; do
+    [ -n "$pane_id" ] || continue
+    case $'\n'"$seen" in
+      *$'\n'"$pane_id"$'\n'*) continue ;;
+    esac
+    seen="${seen}${pane_id}"$'\n'
+    printf '%s:%s\t%s\n' "$session" "$pane_id" "$label"
+  done < <(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null \
+    | jq -r '.result.panes[]? | select((.label | type) == "string") | select(.label | startswith("fm-")) | "\(.pane_id)\t\(.label)"' 2>/dev/null)
 }
 
 # --- native event push: pane.agent_status_changed subscriber -----------------
