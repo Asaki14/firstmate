@@ -2947,9 +2947,9 @@ fm_backend_herdr_send_key() {  # <target> <key>
   fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-keys "$FM_BACKEND_HERDR_PANE" "$key" >/dev/null 2>&1
 }
 
-# fm_backend_herdr_capture: bounded plain-text pane capture. Mirrors
-# fm-peek.sh's/fm-watch.sh's `tmux capture-pane -p -t T -S -N`. --source recent
-# is the closest herdr analogue to tmux's scrollback-bounded capture.
+# fm_backend_herdr_capture: bounded historical plain-text pane capture for
+# explicit diagnosis such as fm-peek.sh. --source recent is the closest Herdr
+# analogue to tmux's scrollback-bounded capture.
 #
 # Verified CLI quirk (herdr-verification-p2.md "pane read --lines bug", v0.7.1):
 # `pane read --source recent --lines N` returns COMPLETELY EMPTY output when N
@@ -2967,6 +2967,20 @@ fm_backend_herdr_capture() {  # <target> <lines>
   fetch=$lines
   case "$fetch" in ''|*[!0-9]*) fetch=200 ;; *) [ "$fetch" -ge 200 ] || fetch=200 ;; esac
   out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source recent --lines "$fetch" 2>/dev/null) || return 1
+  printf '%s' "$out" | tail -n "$lines"
+}
+
+# fm_backend_herdr_monitor_capture: passive current-screen capture for recurring
+# watcher hashing. A plain recent read larger than the visible screen can drive
+# an idle recognized agent's alternate-screen mouse-scroll interface before
+# restoring the bottom. The visible source never moves the application viewport;
+# omitting --lines avoids the older small-line read bug, then local trim preserves
+# the caller's bounded-output contract.
+fm_backend_herdr_monitor_capture() {  # <target> <lines>
+  fm_backend_herdr_target_ready "$1" || return 1
+  local lines=${2:-200} out
+  case "$lines" in ''|*[!0-9]*) lines=200 ;; esac
+  out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source visible 2>/dev/null) || return 1
   printf '%s' "$out" | tail -n "$lines"
 }
 
