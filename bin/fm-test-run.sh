@@ -28,7 +28,11 @@
 #   fm-test-run.sh --aggregate-json <out.json> <lane.json> [more lane.json...]
 #
 # Options:
-#   --json <path>   write a deterministic timing artifact after the run
+#   --json <path>   write a deterministic timing artifact after the run. Each
+#                   script record carries its family, expected gate-skip class,
+#                   exit, duration, whether it gate-skipped, and the reason it
+#                   gave (empty when it ran), so a lane can say which harness or
+#                   tool this host could not exercise.
 #   --list          print selected script paths (one per line) and exit 0
 #   --list-scheduled
 #                   print selected paths longest-hint-first and exit 0
@@ -43,19 +47,22 @@
 #                   The required Herdr CI lane uses this so a missing pin cannot
 #                   silently pass as a gate skip.
 #   --jobs N        run the selected scripts with up to N concurrent workers.
-#                   Plain --changed uses min(4, cpus) workers when multiple
-#                   selected scripts are admissible.
+#                   Plain --changed and a plain list of script paths use
+#                   min(4, cpus) workers when multiple selected scripts are
+#                   admissible; --lane, --family, and --all stay serial unless
+#                   asked for concurrency explicitly.
 #                   N>1 is allowed only when every selected script is proven
 #                   safe to run concurrently: individually in the proven-isolated
 #                   set (bin/fm-test-isolation-proof.sh --list), or in a family
 #                   carrying a recorded concurrent proof
 #                   (list_concurrent_safe_families below). Overall cap is 8;
-#                   family proofs may impose a lower cap. Unproven stateful
-#                   scripts stay serial. Concurrent runs are ordered
-#                   longest-hint-first so the slowest script is not stranded
-#                   alone at the tail. Default is 1 (serial) except for plain
-#                   --changed, which uses the bounded automatic scheduler. Any
-#                   unproven remainder runs serially after that group.
+#                   family proofs may impose a lower cap. Individually proven
+#                   scripts share one phase; scripts admitted only by a family
+#                   proof run in a separate phase for each family. Concurrent
+#                   phases are ordered longest-hint-first. Unproven stateful
+#                   scripts run serially after all concurrent phases. Default is
+#                   1 (serial) except for plain --changed and a plain list of
+#                   script paths, which use the bounded automatic scheduler.
 #   --per-script-timeout-secs N
 #                   terminate a script that runs longer than N seconds and
 #                   record it as exit 124 (0 disables, the default). The
@@ -83,11 +90,26 @@
 #   FM_TEST_SLOWEST rank=<k> script=<path> duration_ms=<n>
 #   FM_TEST_BUDGET max_wall_ms=<n> duration_ms=<n>   (only with --max-wall-ms)
 #
+# Placement refusal:
+#   A task worker is assigned an isolated worktree, and that placement is
+#   checked only when its task starts. When FM_TASK_ID marks such a worker and
+#   this runner resolves to the repository's PRIMARY checkout, every executing
+#   mode refuses before selecting a suite: the suite creates and switches
+#   branches, and the primary is the checkout every linked worktree resolves
+#   against. Inspection modes execute nothing and stay available, and a run with
+#   no FM_TASK_ID set is unchanged.
+#
 # Exit status is non-zero if any selected script exits non-zero, a configured
 # --fail-on-gate-skip token appears, the measured duration exceeds
 # --max-wall-ms, timing-artifact finalization fails, or a concurrent worker
 # violates its isolation check. Other gate skips (first meaningful line
-# matching ^skip:) remain successful and are counted as skipped_gate.
+# matching ^skip:) remain successful and are counted as skipped_gate; each one
+# is logged with its reason and recorded in the timing artifact.
+#
+# expected_gate_skip classes name why a family is allowed to skip: herdr (the
+# pinned real-Herdr lane), optional-binary (a backend whose binary is optional),
+# live-capability (a live-harness guard governed by fm_live_gate, which records
+# unavailable tools and explicit policy skips; see tests/lib.sh), or none.
 #
 # Family labels, the changed-file map, and production portable-shard composition
 # live in this script only (one owner). The proven-isolated candidate set remains
@@ -189,6 +211,29 @@ now_iso() {
   date -u +%Y-%m-%dT%H:%M:%SZ
 }
 
+# Enforce the placement refusal described in this script's header.
+#
+# The primary checkout is the working tree whose own git dir IS the repository's
+# common git dir; every linked worktree has a git dir under it instead. That is
+# the same predicate bin/fm-spawn.sh uses to keep a launch out of the primary,
+# and unlike comparing top-level paths it still holds when the primary is
+# reached through a different path. When git resolves neither directory - a
+# non-repository fixture, a detached copy - nothing proves this is the primary,
+# so the run proceeds.
+refuse_primary_checkout_for_task() {
+  local task_id git_dir common_dir top
+  task_id=${FM_TASK_ID:-}
+  [ -n "$task_id" ] || return 0
+  git_dir=$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null) \
+    && git_dir=$(cd "$git_dir" 2>/dev/null && pwd -P) || git_dir=
+  common_dir=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+    && common_dir=$(cd "$common_dir" 2>/dev/null && pwd -P) || common_dir=
+  [ -n "$git_dir" ] && [ -n "$common_dir" ] || return 0
+  [ "$git_dir" = "$common_dir" ] || return 0
+  top=$(cd "$ROOT" && pwd -P)
+  die "refusing to run in the repository primary checkout $top while FM_TASK_ID=$task_id is set; run from the assigned task worktree instead"
+}
+
 cpu_count() {
   local n
   n=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
@@ -201,6 +246,13 @@ cpu_count() {
 
 # Primary family for one tests/*.test.sh basename. Unmapped scripts are
 # unclassified so new tests are still runnable and visible in summaries.
+#
+# `standalone` is the residual family: scripts that belong to no subsystem
+# family above but each own their own surface. Its membership is enumerated
+# rather than inherited from the `*)` catch-all precisely because the catch-all
+# also swallows every test nobody has classified yet. Keeping the two separate
+# is what lets `standalone` carry a concurrent proof while a brand-new test
+# lands in `unclassified` and stays serial until someone proves it.
 family_for_basename() {
   case "$1" in
     fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|\
@@ -211,7 +263,7 @@ family_for_basename() {
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
     fm-crew-state.test.sh|fm-captain-hold-lifecycle.test.sh|\
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
-    fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
+    fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-rovo-harness.test.sh|fm-omp-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-lint-workflows.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
     fm-harness-adapter-references.test.sh|\
@@ -238,6 +290,7 @@ family_for_basename() {
     fm-backend-herdr-launcher-workspace-e2e.test.sh|\
     fm-backend-herdr-pane-placement-e2e.test.sh|\
     fm-backend-herdr-prune-safety-e2e.test.sh|fm-backend-herdr-respawn-idem-e2e.test.sh|\
+    fm-backend-herdr-focus-flash-e2e.test.sh|\
     fm-herdr-session-cleanup-e2e.test.sh|\
     fm-backend-herdr-smoke.test.sh|fm-backend-herdr-workspace-per-home-e2e.test.sh|\
     fm-control-herdr-smoke.test.sh)
@@ -250,6 +303,7 @@ family_for_basename() {
     fm-remote-secondmate-trace-context.test.sh|\
     fm-secondmate-harness.test.sh|fm-secondmate-lifecycle-e2e.test.sh|\
     fm-secondmate-liveness.test.sh|fm-secondmate-reconcile.test.sh|\
+    fm-secondmate-restart.test.sh|\
     fm-secondmate-safety.test.sh|fm-secondmate-sync.test.sh|\
     fm-startup-memory-budget.test.sh|fm-stow-cascade.test.sh|\
     fm-send-secondmate-marker.test.sh|fm-shared-captain-inheritance.test.sh)
@@ -262,16 +316,19 @@ family_for_basename() {
       printf '%s\n' session-bootstrap
       ;;
     fm-afk-pi-herdr-return-e2e.test.sh|\
+    fm-bearings-board-lavish-live-e2e.test.sh|\
+    fm-claude-stop-autoarm-live-e2e.test.sh|\
     fm-cmux-claude-composer-live-e2e.test.sh|\
     fm-composer-matrix-live-e2e.test.sh|\
     fm-codex-continuity-live-e2e.test.sh|fm-grok-continuity-live-e2e.test.sh|\
     fm-cursor-primary-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-harness-adapter-instructions-live-e2e.test.sh|\
     fm-harness-liveness-drift-live-e2e.test.sh|\
-    fm-muse-signals-live-e2e.test.sh|\
+    fm-muse-signals-live-e2e.test.sh|fm-rovo-signals-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
-    fm-pi-primary-live-e2e.test.sh|\
+    fm-pi-branch-responsiveness-live-e2e.test.sh|\
+    fm-pi-primary-live-e2e.test.sh|fm-omp-primary-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
     fm-send-inbox-doorbell-live-e2e.test.sh|\
@@ -283,7 +340,7 @@ family_for_basename() {
     fm-control.test.sh|fm-control-relaunch.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|\
     fm-send-inbox.test.sh|fm-spawn-batch.test.sh|\
-    fm-spawn-dispatch-profile.test.sh|\
+    fm-spawn-dispatch-profile.test.sh|fm-claude-trust.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
@@ -308,6 +365,22 @@ family_for_basename() {
     fm-backend-orca.test.sh)
       printf '%s\n' orca
       ;;
+    fm-branch-supervision.test.sh|fm-busy-adapter-wiring.test.sh|\
+    fm-busy-state.test.sh|fm-classify-corr-token.test.sh|\
+    fm-claude-stop-autoarm.test.sh|fm-cursor-harness.test.sh|\
+    fm-extension-binding.test.sh|fm-gitignore-config.test.sh|\
+    fm-no-mistakes-required.test.sh|fm-peek-remote.test.sh|\
+    fm-pending-reply.test.sh|fm-pi-branch-extension.test.sh|\
+    fm-procevent-quota.test.sh|fm-procevent-when.test.sh|fm-procevent.test.sh|\
+    fm-live-gate.test.sh|\
+    fm-project-origin.test.sh|fm-public-followup.test.sh|fm-quota-choose.test.sh|\
+    fm-remote-entrypoint.test.sh|fm-remote-secondmate-parent-binding.test.sh|\
+    fm-send-remote-delivery.test.sh|fm-spawn-pool-base-freshen.test.sh|\
+    fm-test-fixture-cleanup.test.sh|fm-test-fixtures.test.sh|\
+    fm-voice-relay.test.sh|fm-wake-drain-open-decisions-cursor.test.sh|\
+    fm-wake-drain-open-decisions.test.sh|fm-wake-drain-outcome-backstop.test.sh)
+      printf '%s\n' standalone
+      ;;
     *)
       printf '%s\n' unclassified
       ;;
@@ -317,7 +390,7 @@ family_for_basename() {
 expected_gate_skip_for_family() {
   case "$1" in
     real-herdr-gated) printf '%s\n' herdr ;;
-    live-harness-optin) printf '%s\n' optin-env ;;
+    live-harness-optin) printf '%s\n' live-capability ;;
     cmux|zellij|orca) printf '%s\n' optional-binary ;;
     snapshot-bearings) printf '%s\n' optional-binary ;;
     *) printf '%s\n' none ;;
@@ -339,6 +412,7 @@ snapshot-bearings
 cmux
 zellij
 orca
+standalone
 unclassified
 EOF
 }
@@ -439,6 +513,10 @@ list_concurrent_safe_families() {
   cat <<'EOF'
 watcher-wake-lock
 pure-contract-unit
+pr-forge
+secondmate
+session-bootstrap
+standalone
 EOF
 }
 
@@ -452,7 +530,8 @@ family_is_concurrent_safe() {
 
 concurrent_safe_family_jobs_max() {
   case "$1" in
-    watcher-wake-lock|pure-contract-unit) printf '4\n' ;;
+    watcher-wake-lock|pure-contract-unit|pr-forge) printf '4\n' ;;
+    secondmate|session-bootstrap|standalone) printf '4\n' ;;
     *) printf '1\n' ;;
   esac
 }
@@ -480,8 +559,8 @@ is_proven_isolated_script() {
 
 # The portable serial remainder: every tests/*.test.sh that is neither
 # proven-isolated nor real-herdr-gated. Watcher, lock, AFK, real tmux, daemon,
-# secondmate lifecycle, bootstrap, live-harness opt-in, GUI-backend, and other
-# unproven work stays here. Derived rather than enumerated so a newly added test
+# secondmate lifecycle, bootstrap, the live-harness-optin family, GUI-backend,
+# and other unproven work stays here. Derived rather than enumerated so a newly added test
 # lands here by default instead of falling out of every lane.
 list_portable_serial() {
   local s base fam
@@ -513,7 +592,6 @@ tests/fm-afk-return.test.sh 1837
 tests/fm-ask-user-authority.test.sh 128
 tests/fm-backend-cmux-smoke.test.sh 33
 tests/fm-backend-cmux.test.sh 3657
-tests/fm-backend-herdr-focus-flash-e2e.test.sh 22
 tests/fm-backend-orca.test.sh 19253
 tests/fm-backend-tmux-smoke.test.sh 393
 tests/fm-backend-zellij-smoke.test.sh 23
@@ -564,6 +642,7 @@ tests/fm-home-summary-refresh.test.sh 34793
 tests/fm-inactive-reconcile.test.sh 41826
 tests/fm-kimi-harness.test.sh 18015
 tests/fm-lint-workflows.test.sh 855
+tests/fm-live-gate.test.sh 6000
 tests/fm-muse-harness.test.sh 55572
 tests/fm-muse-signals-live-e2e.test.sh 23
 tests/fm-no-mistakes-required.test.sh 370
@@ -574,8 +653,10 @@ tests/fm-peek-remote.test.sh 1018
 tests/fm-pending-reply.test.sh 24679
 tests/fm-pi-branch-extension.test.sh 22239
 tests/fm-pi-branch-live-e2e.test.sh 56
+tests/fm-pi-branch-responsiveness-live-e2e.test.sh 21
 tests/fm-pi-primary-live-e2e.test.sh 20
 tests/fm-pi-watch-extension.test.sh 42970
+tests/fm-pi-windows-shell-invocation.test.sh 5121
 tests/fm-pr-check-security.test.sh 160475
 tests/fm-procevent-quota.test.sh 1949
 tests/fm-procevent-when.test.sh 17392
@@ -639,6 +720,7 @@ tests/fm-voice-relay.test.sh 28699
 tests/fm-wake-daemon-lifecycle-e2e.test.sh 7381
 tests/fm-wake-drain-open-decisions-cursor.test.sh 20629
 tests/fm-wake-drain-open-decisions.test.sh 6240
+tests/fm-wake-drain-outcome-backstop.test.sh 15182
 tests/fm-wake-drain-unread-status.test.sh 35078
 tests/fm-wake-queue.test.sh 56674
 tests/fm-watch-arm.test.sh 58528
@@ -1207,10 +1289,41 @@ families_for_changed_path() {
     bin/fm-quota-choose.sh)
       printf '%s\n' "__script__:fm-quota-choose.test.sh"
       ;;
+    .pi/extensions/fm-branch-supervision.ts|.pi/extensions/lib/fm-async-exec.ts|\
+    .pi/extensions/lib/fm-branch-dispatch.ts)
+      # The portable suites that actually load these files, named one by one.
+      # Left unmapped, a Pi extension library resolves through the reference
+      # scan, which widens to each referencing suite's WHOLE family - and
+      # these suites sit in four different families, so that pulls in dozens
+      # of suites with nothing to do with Pi.
+      printf '%s\n' __script__:fm-pi-branch-extension.test.sh
+      printf '%s\n' __script__:fm-pi-watch-extension.test.sh
+      printf '%s\n' __script__:fm-calm-pi-extension.test.sh
+      printf '%s\n' __script__:fm-watch-recovery-loop.test.sh
+      printf '%s\n' __script__:fm-wake-queue.test.sh
+      printf '%s\n' __script__:fm-pi-primary-types.test.sh
+      # Whether an arriving outcome still lets the captain type is a fact only
+      # a real Pi TUI can answer, so the live guards are selected too.
+      printf '%s\n' live-harness-optin
+      ;;
+    .pi/extensions/lib/fm-operational-input.ts)
+      # The same rule for the operational-input library, whose reach is wider:
+      # every Pi extension that classifies or encodes operational text.
+      printf '%s\n' __script__:fm-pi-windows-shell-invocation.test.sh
+      printf '%s\n' __script__:fm-pi-branch-extension.test.sh
+      printf '%s\n' __script__:fm-pi-watch-extension.test.sh
+      printf '%s\n' __script__:fm-calm-pi-extension.test.sh
+      printf '%s\n' __script__:fm-watch-recovery-loop.test.sh
+      printf '%s\n' __script__:fm-turnend-guard.test.sh
+      printf '%s\n' __script__:fm-sessionstart-nudge.test.sh
+      printf '%s\n' __script__:fm-pi-primary-types.test.sh
+      printf '%s\n' live-harness-optin
+      ;;
     bin/fm-sessionstart-run.sh|.claude/settings.json|.codex/hooks.json|\
     .pi/extensions/fm-primary-turnend-guard.ts)
       # The run tier's two harness-supplied facts (source vocabulary and
       # context-reset stdout injection) only show up against a real harness.
+      printf '%s\n' __script__:fm-pi-windows-shell-invocation.test.sh
       printf '%s\n' session-bootstrap
       printf '%s\n' live-harness-optin
       ;;
@@ -1310,7 +1423,7 @@ families_for_changed_path() {
     docs/fm-test-isolation-proof.json)
       printf '%s\n' pure-contract-unit
       ;;
-    .github/*|.tasks.toml|AGENTS.md|CLAUDE.md|CONTRIBUTING.md|\
+    .github/*|.gitattributes|.tasks.toml|AGENTS.md|CLAUDE.md|CONTRIBUTING.md|\
     docs/configuration.md|docs/supervision-protocols/*)
       printf '%s\n' pure-contract-unit
       ;;
@@ -1345,8 +1458,15 @@ families_for_changed_path() {
     README.md|LICENSE|assets/*|docs/*|.gitignore)
       ;;
     *)
-      families_for_test_reference "$path" \
-        || printf '%s\n' "__unmapped__:$path"
+      if [ -e "$path" ]; then
+        families_for_test_reference "$path" \
+          || printf '%s\n' "__unmapped__:$path"
+      else
+        # A retired source path with no remaining test consumer cannot select
+        # a runnable suite. Known source paths above retain their mappings,
+        # and a still-referenced removal is found by the same reference scan.
+        families_for_test_reference "$path" || true
+      fi
       ;;
   esac
 }
@@ -1422,6 +1542,17 @@ detect_gate_skip() {
   esac
 }
 
+# Echo the reason a gate skip gave, i.e. the first meaningful output line with
+# its leading "skip:" removed. Tabs and stray whitespace are folded so the
+# reason stays one field of the tab-separated record the JSON artifact is built
+# from. Callers only use this once detect_gate_skip has already said yes.
+gate_skip_reason() {
+  local file=$1 first
+  first=$(awk 'NF { print; exit }' "$file" 2>/dev/null || true)
+  first=${first#skip:}
+  printf '%s\n' "$first" | tr '\t' ' ' | sed -e 's/^ *//' -e 's/ *$//'
+}
+
 # True when any output line contains "skip: <token>" (token may contain spaces).
 detect_gate_skip_token() {
   local file=$1 token=$2
@@ -1475,7 +1606,7 @@ with open(records_file, encoding="utf-8") as fh:
         line = line.rstrip("\n")
         if not line:
             continue
-        path, family, expected, exit_s, dur_s, gate = line.split("\t")
+        path, family, expected, exit_s, dur_s, gate, reason = line.split("\t")
         scripts.append({
             "path": path,
             "family": family,
@@ -1483,6 +1614,7 @@ with open(records_file, encoding="utf-8") as fh:
             "duration_ms": int(dur_s),
             "exit": int(exit_s),
             "gate_skip": gate == "true",
+            "gate_skip_reason": reason,
         })
 
 families = []
@@ -1743,6 +1875,16 @@ case "$PER_SCRIPT_TIMEOUT_SECS" in
   ''|*[!0-9]*) die "--per-script-timeout-secs requires a whole number of seconds (0 disables)" ;;
 esac
 
+# Refuse before any suite is selected or run. The inspection modes execute
+# nothing: --list-families, --list-concurrent-safe-families, --list-lanes,
+# --check-coverage, --concurrent-safe-family-jobs-max and --aggregate-json have
+# already exited above, and --list/--list-scheduled print their selection and
+# exit below. An unset MODE still falls through to the usage error, so a caller
+# who named no selection mode is told that rather than this.
+if [ -n "${MODE:-}" ] && [ "$LIST_ONLY" -eq 0 ] && [ "$LIST_SCHEDULED" -eq 0 ]; then
+  refuse_primary_checkout_for_task
+fi
+
 case "${MODE:-}" in
   all)
     select_all
@@ -1841,11 +1983,17 @@ for s in "${SCRIPTS[@]}"; do
   [ -x "$s" ] || [ -r "$s" ] || die "test script not readable: $s"
 done
 
-# Plain --changed uses the bounded representative-suite scheduler; numeric
-# --jobs retains the strict all-script admission rule below.
+# Plain --changed and a plain list of script paths both use the bounded
+# representative-suite scheduler; numeric --jobs retains the strict all-script
+# admission rule below. Naming scripts is how a local verification round asks
+# for exactly those subjects, so it gets bounded concurrency rather than a
+# serial chain of separate runs.
+# The curated selections stay untouched: --lane composes CI shards whose serial
+# lane must stay strictly serial, --family is what the required Herdr lane runs,
+# and --all is a deliberate complete regression.
 AUTO_CONCURRENCY=0
-if [ "$MODE" = changed ] && [ "$JOBS_EXPLICIT" -eq 0 ]; then
-  if [ "${#SCRIPTS[@]}" -gt 0 ] && [ "$PER_SCRIPT_TIMEOUT_SECS" -eq 0 ]; then
+if { [ "$MODE" = changed ] || [ "$MODE" = scripts ]; } && [ "$JOBS_EXPLICIT" -eq 0 ]; then
+  if [ "$MODE" = changed ] && [ "${#SCRIPTS[@]}" -gt 0 ] && [ "$PER_SCRIPT_TIMEOUT_SECS" -eq 0 ]; then
     PER_SCRIPT_TIMEOUT_SECS=$CHANGED_DEFAULT_TIMEOUT_SECS
   fi
   auto_admissible=0
@@ -1859,7 +2007,7 @@ if [ "$MODE" = changed ] && [ "$JOBS_EXPLICIT" -eq 0 ]; then
     [ "$JOBS" -eq 1 ] || AUTO_CONCURRENCY=1
   fi
 fi
-if [ "$JOBS" -gt 1 ] || [ "$MODE" = changed ]; then
+if [ "$JOBS" -gt 1 ] || [ "$MODE" = changed ] || [ "$MODE" = scripts ]; then
   SELECTION_DESC="${SELECTION_DESC};jobs=$JOBS"
 fi
 
@@ -1879,33 +2027,45 @@ if [ "$JOBS" -gt 1 ] && [ "$AUTO_CONCURRENCY" -eq 0 ]; then
   done
 fi
 
-# Split the run into the proven-concurrent scripts and an unproven remainder.
-# The remainder runs serially AFTER the concurrent group, never beside it, so an
-# unproven script still never shares a machine with another test. An explicit
-# --jobs refused above, so its remainder is always empty.
+# Split the run into proven concurrent phases and an unproven remainder.
+# Individually proven scripts share one phase. Scripts admitted only by a family
+# proof get a separate phase per family, because that proof establishes safety
+# only among members of that family. The serial remainder runs after every
+# concurrent phase, never beside another test.
 CONCURRENT_SCRIPTS=()
 SERIAL_TAIL_SCRIPTS=()
+CONCURRENT_PHASE_BREAK=__fm_test_concurrent_phase_break__
 if [ "$JOBS" -gt 1 ]; then
   SCHEDULE_TMP=$(mktemp "${TMPDIR:-/tmp}/fm-test-sched.XXXXXX")
   : >"$SCHEDULE_TMP"
-  # Two passes: the tail array must be built in this shell, so the weighted
-  # listing is written to a file rather than piped into sort from a loop whose
-  # appends would be lost in a subshell.
   for s in "${SCRIPTS[@]}"; do
     if script_allows_concurrency "$s"; then
-      # Longest first: workers are handed scripts in order, so starting the
-      # longest last strands it running alone at the tail. Measured over the
-      # watcher family, alphabetical order finished in 395s where the balanced
-      # four-worker sum was 205s.
-      printf '%s\t%s\n' "$(portable_serial_weight_for "$s")" "$s" >>"$SCHEDULE_TMP"
+      if is_proven_isolated_script "$s"; then
+        phase=0
+      else
+        family=$(family_for_basename "$(basename "$s")")
+        phase=1
+        while IFS= read -r admitted_family; do
+          [ "$family" = "$admitted_family" ] && break
+          phase=$((phase + 1))
+        done < <(list_concurrent_safe_families)
+      fi
+      # Longest first within each isolation phase: workers are handed scripts
+      # in order, so starting the longest last strands it at the tail.
+      printf '%s\t%s\t%s\n' "$phase" "$(portable_serial_weight_for "$s")" "$s" >>"$SCHEDULE_TMP"
     else
       SERIAL_TAIL_SCRIPTS+=("$s")
     fi
   done
-  while IFS=$'\t' read -r _weight s; do
+  previous_phase=
+  while IFS=$'\t' read -r phase _weight s; do
     [ -n "$s" ] || continue
+    if [ -n "$previous_phase" ] && [ "$phase" != "$previous_phase" ]; then
+      CONCURRENT_SCRIPTS+=("$CONCURRENT_PHASE_BREAK")
+    fi
     CONCURRENT_SCRIPTS+=("$s")
-  done < <(LC_ALL=C sort -t"$(printf '\t')" -k1,1nr -k2,2 "$SCHEDULE_TMP")
+    previous_phase=$phase
+  done < <(LC_ALL=C sort -t"$(printf '\t')" -k1,1n -k2,2nr -k3,3 "$SCHEDULE_TMP")
   rm -f "$SCHEDULE_TMP"
 fi
 
@@ -1970,7 +2130,7 @@ family_bump() {
 
 record_script_result() {
   local script=$1 rc=$2 duration=$3 out=$4 end_iso=$5
-  local base family expected gate_skip fail_delta
+  local base family expected gate_skip gate_reason fail_delta
   base=$(basename "$script")
   family=$(family_for_basename "$base")
   expected=$(expected_gate_skip_for_family "$family")
@@ -1981,9 +2141,14 @@ record_script_result() {
   fi
 
   gate_skip=false
+  gate_reason=
   if [ "$rc" -eq 0 ] && detect_gate_skip "$out"; then
     gate_skip=true
+    gate_reason=$(gate_skip_reason "$out")
     SKIPPED_GATE=$((SKIPPED_GATE + 1))
+    # A capability skip is the runner's only record of what this host could not
+    # exercise, so name it rather than leaving a silent green.
+    log "gate skip: $script: ${gate_reason:-<no reason given>}"
   fi
 
   printf 'FM_TEST_END %s %s exit=%s duration_ms=%s gate_skip=%s\n' \
@@ -1996,8 +2161,8 @@ record_script_result() {
     AGG_RC=1
   fi
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$script" "$family" "$expected" "$rc" "$duration" "$gate_skip" >>"$RECORDS"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$script" "$family" "$expected" "$rc" "$duration" "$gate_skip" "$gate_reason" >>"$RECORDS"
   family_bump "$family" "$duration" "$fail_delta"
   TOTAL=$((TOTAL + 1))
 }
@@ -2073,10 +2238,19 @@ if [ "$JOBS" -eq 1 ]; then
   done
 else
   # Bounded concurrent execution for admitted scripts. Each worker gets a
-  # private mode-0700 TMPDIR so mktemp roots cannot collide. Retries are never
-  # used as a green strategy.
+  # private mode-0700 TMPDIR so mktemp roots cannot collide. Native Windows
+  # Bash layers report synthetic POSIX modes, so retain chmod there but enforce
+  # its observed mode only where the host reports real POSIX permissions.
+  # Retries are never used as a green strategy.
   worker_n=0
   active_workers=0
+
+  worker_root_mode_is_enforceable() {
+    case "$(uname -s)" in
+      MINGW*|MSYS*) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
 
   wait_one_job_worker() {
     local slot=$1 pid idx work script rc duration mode out end_iso
@@ -2099,14 +2273,16 @@ else
     if [ -s "$out" ]; then
       cat "$out"
     fi
-    mode=$(stat -c %a "$work" 2>/dev/null || stat -f %Lp "$work" 2>/dev/null || echo unknown)
-    case "$mode" in
-      700|0700) ;;
-      *)
-        log "isolation failure: worker root mode is $mode, expected 0700 ($work)"
-        rc=1
-        ;;
-    esac
+    if worker_root_mode_is_enforceable; then
+      mode=$(stat -c %a "$work" 2>/dev/null || /usr/bin/stat -f %Lp "$work" 2>/dev/null || echo unknown)
+      case "$mode" in
+        700|0700) ;;
+        *)
+          log "isolation failure: worker root mode is $mode, expected 0700 ($work)"
+          rc=1
+          ;;
+      esac
+    fi
     record_script_result "$script" "$rc" "$duration" "$out" "$end_iso"
   }
 
@@ -2137,6 +2313,12 @@ else
   }
 
   for script in "${CONCURRENT_SCRIPTS[@]+"${CONCURRENT_SCRIPTS[@]}"}"; do
+    if [ "$script" = "$CONCURRENT_PHASE_BREAK" ]; then
+      while [ "$active_workers" -gt 0 ]; do
+        wait_one_completed_job_worker
+      done
+      continue
+    fi
     while [ "$active_workers" -ge "$JOBS" ]; do
       wait_one_completed_job_worker
     done

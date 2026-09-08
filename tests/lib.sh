@@ -26,6 +26,13 @@ if [ -n "${FM_TEST_LIB_SOURCED:-}" ]; then
 fi
 FM_TEST_LIB_SOURCED=1
 
+# Pin the fixture umask. Firstmate's state-root and process-event contracts
+# refuse group- or world-writable state directories, and a permissive ambient
+# umask (e.g. 0002) makes every `mkdir state` fixture fail that contract before
+# the behavior under test can even run. 022 is the conventional default this
+# suite's fixtures were written against.
+umask 022
+
 # Exempt firstmate's own test suite from the gate-lifecycle refusal
 # (bin/fm-gate-refuse-lib.sh). The no-mistakes gate runs this suite FROM a gate
 # worktree - the exact environment that guard refuses - so without this every
@@ -34,6 +41,12 @@ FM_TEST_LIB_SOURCED=1
 # the boundary against the real hazard is unaffected. tests/fm-gate-refuse.test.sh
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
+
+# Clear the task-worker marker bin/fm-spawn.sh exports into ship and scout
+# panes. This suite builds git-init fixture repositories whose primary checkout
+# it runs a copied bin/fm-test-run.sh in, and that runner refuses the primary
+# under the marker. A case that verifies the refusal sets FM_TASK_ID itself.
+unset FM_TASK_ID
 
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
@@ -156,13 +169,110 @@ if [ "${FM_TEST_SKIP_ORPHAN_REAP:-0}" != 1 ]; then
   fm_test_reap_orphans
 fi
 
+# --- live-capability gate ---------------------------------------------------
+#
+# fm_live_gate <policy> <vars> [tool ...]
+#
+# The single gate every live-harness guard opens with, so "can this host run
+# this guard for real, and should it?" is decided in one place instead of in
+# two dozen hand-rolled env checks. It returns 0 when the guard should run, and
+# otherwise ends the script with one runner-readable line:
+#
+#   skip: live: <tool> absent                 this host cannot run the guard
+#   skip: live: disabled by <VAR>=0           an explicit local opt-out
+#   skip: live: opt-in; set <VAR>=1 to run    a guard that spends model tokens
+#
+# <policy> is default-on for a guard that spends no model tokens, so it runs
+# wherever its tools are installed - notably on the machine the product and its
+# validation actually run on - and opt-in for a guard that submits prompts,
+# which stays deliberate. <vars> is the guard's own control variable, or a
+# comma-separated list when a guard has more than one entry point.
+#
+# Setting any of those variables to 1 (or FM_LIVE=1, for every guard at once)
+# both turns the guard on and makes an absent tool a hard failure rather than a
+# skip, which is how "run it after a harness upgrade" keeps proving the guard
+# actually ran. Setting one to 0 (or FM_LIVE=0) turns it off; a guard's own
+# variable wins over FM_LIVE.
+#
+# Sourcing this library also exports FM_GATE_REFUSE_BYPASS=1, which is what
+# lets a live guard drive the real fm-spawn/fm-send/fm-teardown from inside a
+# no-mistakes gate worktree instead of being refused by
+# bin/fm-gate-refuse-lib.sh.
+
+fm_live_gate() {
+  local policy=$1 vars=$2
+  shift 2
+  local var value rest primary requested=0 disabled_by='' tool
+  local -a var_list=()
+
+  case "$policy" in
+    default-on | opt-in) ;;
+    *) fail "fm_live_gate: unknown policy '$policy' (expected default-on or opt-in)" ;;
+  esac
+
+  rest=$vars
+  while [ -n "$rest" ]; do
+    var=${rest%%,*}
+    if [ "$var" = "$rest" ]; then
+      rest=''
+    else
+      rest=${rest#*,}
+    fi
+    [ -n "$var" ] && var_list+=("$var")
+  done
+  [ "${#var_list[@]}" -gt 0 ] || fail "fm_live_gate: at least one control variable is required"
+  primary=${var_list[0]}
+
+  for var in "${var_list[@]}"; do
+    value=${!var:-}
+    case "$value" in
+      1) requested=1 ;;
+      0) [ -n "$disabled_by" ] || disabled_by=$var ;;
+    esac
+  done
+
+  if [ "$requested" -eq 0 ]; then
+    if [ -n "$disabled_by" ]; then
+      printf 'skip: live: disabled by %s=0\n' "$disabled_by"
+      exit 0
+    fi
+    case "${FM_LIVE:-}" in
+      0)
+        printf 'skip: live: disabled by FM_LIVE=0\n'
+        exit 0
+        ;;
+      1) requested=1 ;;
+      *)
+        if [ "$policy" = opt-in ]; then
+          printf 'skip: live: opt-in; set %s=1 to run\n' "$primary"
+          exit 0
+        fi
+        ;;
+    esac
+  fi
+
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null 2>&1 && continue
+    if [ "$requested" -eq 1 ]; then
+      printf 'not ok - %s was requested but %s is not installed\n' "$primary" "$tool" >&2
+      exit 1
+    fi
+    printf 'skip: live: %s absent\n' "$tool"
+    exit 0
+  done
+
+  return 0
+}
+
 # --- fakebin / PATH shims ---------------------------------------------------
 #
 # fm_fakebin <dir> creates <dir>/fakebin and echoes it; prepend it to PATH to
 # shadow real tools with stubs. fm_fake_exit0 drops trivial exit-0 stubs for the
-# named tools into a fakebin dir. fm_fake_version_tool drops a stub for a tool
-# whose installed version bootstrap gates, so a fixture cannot be reported as an
-# unparseable build simply for answering `--version` with nothing.
+# named tools into a fakebin dir. fm_fake_crash_injector drops the shim a fake
+# uses to crash the process under test deterministically. fm_fake_version_tool
+# drops a stub for a tool whose installed version bootstrap gates, so a fixture
+# cannot be reported as an unparseable build simply for answering `--version`
+# with nothing.
 
 fm_fakebin() {
   local dir=$1 fakebin="$1/fakebin"
@@ -180,6 +290,42 @@ exit 0
 SH
     chmod +x "$fakebin/$tool"
   done
+}
+
+# fm_fake_crash_injector <fakebin>
+# Drops an `fm-crash-inject <pid>` shim that a PATH fake calls to simulate a
+# hard crash of the process under test. It SIGKILLs <pid> and then returns only
+# once that process is observably gone, so the fake never resumes work while its
+# victim could still be running. Sleeping a fixed interval instead makes the
+# injection a wall-clock bet that a loaded host loses: the fake wakes up and
+# completes the very operation the case needs left unfinished. Exits non-zero
+# with a diagnostic if the target outlives the signal, so a broken injection
+# fails loudly rather than silently changing what the case measures.
+fm_fake_crash_injector() {
+  local fakebin=$1
+  cat > "$fakebin/fm-crash-inject" <<'SH'
+#!/usr/bin/env bash
+set -u
+target=${1:?fm-crash-inject: <pid> required}
+case "$target" in
+  ''|*[!0-9]*)
+    echo "fm-crash-inject: '$target' is not a pid" >&2
+    exit 1
+    ;;
+esac
+kill -KILL "$target" 2>/dev/null || true
+waited=0
+while [ "$waited" -lt 600 ]; do
+  case "$(ps -o state= -p "$target" 2>/dev/null | tr -d '[:space:]')" in
+    ''|Z*) exit 0 ;;
+  esac
+  waited=$((waited + 1))
+  sleep 0.05
+done
+echo "fm-crash-inject: pid $target still running 30s after SIGKILL" >&2
+exit 1
+SH
+  chmod +x "$fakebin/fm-crash-inject"
 }
 
 # fm_fake_version_tool <fakebin> <tool> <override-env-var> <default-version>
