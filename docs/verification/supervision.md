@@ -55,6 +55,24 @@ Both tracked `.omp/extensions/*.ts` files loaded by auto-discovery alone (no `-e
 omp's `session_start` payload carries no reason field, so the adapter derives the source: the first start of the process is `startup` (or `resume` from a `--continue`/`--resume` launch line) and a later in-process start is `clear`; `tests/fm-omp-harness.test.sh` pins that mapping over a fake omp API.
 A file named both by `-e` and by auto-discovery loads twice (two factory calls, doubled `session_stop` continuations), which is why the secondmate launch names no `-e` and the per-task worker extension lives in `state/`.
 
+Reverified on 2026-09-20 with omp 18.2.6 and `openai-codex/gpt-5.6-sol`, including a real native task child in the same process:
+
+```sh
+FM_OMP_LIVE_E2E=1 FM_OMP_LIVE_MODEL=openai-codex/gpt-5.6-sol bin/fm-test-run.sh tests/fm-omp-primary-live-e2e.test.sh
+FM_OMP_EXTENSIONS_ONLY=1 bin/fm-test-run.sh tests/fm-omp-harness.test.sh
+```
+
+```text
+ok - omp omp/18.2.6: native child lifecycle preserves primary watcher ownership and active repair
+ok - .omp watcher: acknowledged events stay handled, unconsumed events survive, native children cannot steal supervision
+ok - .omp watcher: multi-key acknowledged wakes stay handled, mixed reasons replay, a handled live close still restores a successor
+```
+
+The live guard observes the executor's `session_init` entry at the child's real `session_start`, checks that primary watcher messages never reach that child, and verifies that the original healthy watcher still owns supervision after primary repair.
+The portable regression covers exact source-and-sequence handled acknowledgements, rejects symlink acknowledgements, preserves unconsumed records across replacement, and distinguishes top-level forks from native children.
+It also reconciles a wake naming several captured keys only when every key is acknowledged, replays any wake carrying a stranded or unstarted source, and restores a verified successor after a live close whose result was already handled.
+Closing RPC stdin still did not exit omp within 30 seconds; the guard terminated only its isolated lab processes.
+
 ### Run-tier source vocabulary and context-reset injection
 
 The run tier depends on three facts only the vendor can supply: the session-open source it reports, whether hook stdout reaches model context on a context-RESET open rather than only a cold one, and whether a worker the hook detaches survives the hook returning.

@@ -11,9 +11,8 @@
 //     still tracked at before_agent_start / message_start exactly as on Pi.
 //   - omp reports no session_shutdown reason, so EVERY shutdown with a pending
 //     actionable close persists the replacement handoff and the next owning
-//     session_start, in this process or a later one, replays it. Replaying a
-//     wake main has already drained is harmless (the queue is durable and the
-//     drain is idempotent); losing one across /new is not.
+//     session_start, in this process or a later one, replays it unless its
+//     authoritative process-result acknowledgement already proves handling.
 //   - The Pi supervision branch is out of scope for omp: every actionable wake
 //     is delivered to main, so no branch offer is made and no calm presentation
 //     hooks exist.
@@ -24,8 +23,10 @@
 // omp emits session_shutdown for ordinary same-process replacements (/new,
 // /resume, /fork) as well as terminal quit. This extension binds one generation
 // per session activation. Only the active live generation may start, stop,
-// rearm, or clear the arm child. An owning replacement session_start (or fresh
-// factory bind) arms its new generation without a model turn. A replacement
+// rearm, or clear the arm child. An owning primary session_start arms its new
+// generation without a model turn; a factory bind alone activates nothing,
+// because a native task child reuses this imported factory and its
+// session_start (identified by lib/fm-primary-session.ts) is ignored. A replacement
 // handoff carries actionable closes that were still pending delivery; its
 // durable state lives at state/extensions/omp-primary-watch/session-replacement-actionable.json.
 // Stale callbacks from a prior generation are no-ops against the active replacement.
@@ -52,6 +53,7 @@ import { Type } from "typebox";
 // resolves bin/fm-operational-input.sh relative to its own location, which is
 // the same repository root this file lives in.
 import { encodeFirstmateOperationalInput } from "../../.pi/extensions/lib/fm-operational-input.ts";
+import { isOmpSubagentContext } from "./lib/fm-primary-session.ts";
 
 // The omp extension API surface this file uses. omp is a Pi fork and ships no
 // separately installable type package, so the contract is declared locally
@@ -259,6 +261,32 @@ function nodeErrorCode(error: unknown): string {
   return typeof error === "object" && error !== null && "code" in error
     ? String((error as { code?: unknown }).code ?? "")
     : "";
+}
+
+// The captured keys of a wake whose reason names nothing else. fm-watch.sh
+// appends every not-yet-surfaced captured key to one line and joins stranded or
+// unstarted sources with ";"; those carry no handled marker and never match.
+function capturedProcessEventKeys(message: string): { id: string; seq: string }[] {
+  const captured = /^check: process-event result captured:((?: procevent:[A-Za-z0-9._-]+:[0-9]+)+)$/.exec(message);
+  if (!captured) return [];
+  return captured[1].trim().split(" ").map((key) => {
+    const [, id, seq] = key.split(":");
+    return { id, seq };
+  });
+}
+
+// True only when every captured key carries the handler's durable
+// acknowledgement, checked through the same library that writes it.
+function capturedResultsHandled(message: string): boolean {
+  const keys = capturedProcessEventKeys(message);
+  if (keys.length === 0) return false;
+  const handled = spawnSync("bash", [
+    "-c",
+    'unset FM_PROCEVENT_CAPTURE_PINNED_INBOX; . "$1/fm-pr-lib.sh"; . "$1/fm-procevent-lib.sh"; state=$2; shift 2; while [ $# -ge 2 ]; do fm_procevent_source_id_valid "$1" && fm_procevent_is_handled "$state" "$1" "$2" || exit 1; shift 2; done',
+    "omp-replay",
+    `${fmRoot}/bin`, state, ...keys.flatMap((key) => [key.id, key.seq]),
+  ], { encoding: "utf8" });
+  return handled.status === 0;
 }
 
 function createPendingActionable(message: string, predecessorArmPid: string): PendingActionableClose {
@@ -485,7 +513,6 @@ process.once("exit", cleanupOnProcessExit);
 
 export default function (pi: ExtensionAPI) {
   let generation = createGeneration();
-  activateGeneration(generation);
 
   async function sendWake(
     owner: SessionGeneration,
@@ -669,6 +696,21 @@ export default function (pi: ExtensionAPI) {
           (item) => !item.delivered && !owner.unconsumedWakes.has(item.token),
         );
         if (!pending) break;
+        // A replacement handoff predates the handler's durable acknowledgement.
+        // Reconcile only exact process-result identities, never age or queue
+        // absence: a wake carrying anything but captured keys always replays.
+        if (capturedResultsHandled(pending.message)) {
+          // A live close has no child; the handled wake needs no follow-up but
+          // supervision still needs its verified successor.
+          if (!owner.child && !owner.retryTimer) {
+            owner.deferredClose = null;
+            const restoration = await restoreAfterActionableClose(owner, pending.predecessorArmPid);
+            if (!generationIsLive(owner)) return;
+            if (restoration.failure) surfaceFailure(owner, restoration.failure);
+          }
+          pending.delivered = true;
+          continue;
+        }
         const existingClaim = replacementCoordinator.deliveries.get(pending.token);
         if (existingClaim && existingClaim.owner !== owner) {
           const settlement = await existingClaim.settlement;
@@ -1028,7 +1070,8 @@ export default function (pi: ExtensionAPI) {
     consumeWake(generation, userMessageText(message.content));
   });
 
-  pi.on?.("session_start", async () => {
+  pi.on?.("session_start", async (_event, ctx) => {
+    if (isOmpSubagentContext(ctx)) return;
     if (generation.stopping) generation = createGeneration();
     activateGeneration(generation);
     markLoaded();
@@ -1036,9 +1079,8 @@ export default function (pi: ExtensionAPI) {
     activateOwnedWatch(generation);
   });
   pi.on?.("session_shutdown", async () => {
-    // omp carries no shutdown reason (verified: `reason` is undefined), so the
-    // replacement handoff is always persisted when anything is pending; a
-    // terminal quit then merely replays an already-drained wake next start.
+    // Only this factory's generation is retired. Native children share the
+    // imported module but must never activate or stop the primary generation.
     if (replacementCoordinator.receiver === receiveReplacementActionable) replacementCoordinator.receiver = null;
     await stopSessionGeneration(generation, true);
   });
@@ -1069,5 +1111,4 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  markLoaded();
 }

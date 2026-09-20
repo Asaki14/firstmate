@@ -11,6 +11,8 @@
 # omp binary, and a plain Node host, so CI enforces it with no omp installed;
 # FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh is the live guard that
 # catches vendor drift against a real omp. Neither replaces the other.
+# Set FM_OMP_EXTENSIONS_ONLY=1 to exercise only the extension boundary from a
+# live OMP session, whose real ancestor otherwise confounds fake-name detection.
 #
 # The load-bearing contracts:
 #   1. omp publishes no marker; the anchored process name `omp` is the ancestry
@@ -444,8 +446,10 @@ test_ownership_proof_is_omp_keyed() {
 
 install_omp_extension_fixture() {  # <repo>
   local repo=$1
-  mkdir -p "$repo/.omp/extensions" "$repo/.pi/extensions/lib" "$repo/bin" "$repo/node_modules/typebox"
+  mkdir -p "$repo/.omp/extensions/lib" "$repo/.pi/extensions/lib" "$repo/bin" "$repo/node_modules/typebox"
   cp "$ROOT/.omp/extensions/fm-primary-turnend-guard.ts" "$ROOT/.omp/extensions/fm-primary-omp-watch.ts" "$repo/.omp/extensions/"
+  cp "$ROOT/.omp/extensions/lib/fm-primary-session.ts" "$repo/.omp/extensions/lib/"
+  cp "$ROOT/bin/fm-pr-lib.sh" "$ROOT/bin/fm-procevent-lib.sh" "$repo/bin/"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$ROOT/.pi/extensions/lib/fm-sessionstart-supervisor.mjs" "$repo/.pi/extensions/lib/"
   cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/"
   chmod +x "$repo/bin/fm-operational-input.sh"
@@ -485,6 +489,13 @@ for (const name of ["session_start", "before_agent_start", "session_compact", "s
 if (handlers.has("agent_settled")) throw new Error("omp guard must not listen for agent_settled");
 const ctx = { sessionManager: { getSessionId: () => "s1" } };
 handlers.get("session_start")({ type: "session_start" }, ctx);
+const childHandlers = new Map();
+mod.default({ on(e, h) { childHandlers.set(e, h); }, sendMessage() { throw new Error("child received primary digest"); } });
+const childCtx = { sessionManager: { getSessionId: () => "child", getEntries: () => [{ type: "session_init" }] } };
+await childHandlers.get("session_start")({}, childCtx);
+await childHandlers.get("session_compact")({}, childCtx);
+if (await childHandlers.get("before_agent_start")({ prompt: "child" }, childCtx)) throw new Error("child claimed primary startup");
+await childHandlers.get("session_shutdown")({}, childCtx);
 const first = await handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "hi" }, ctx);
 if (!first?.message?.content?.includes("FIRSTMATE_OP: v1 session-start: OMP DIGEST source=startup")) throw new Error(`first start did not deliver a startup digest: ${JSON.stringify(first)}`);
 if (first.message.display !== false || first.message.customType !== "firstmate-sessionstart-nudge") throw new Error("digest message lost its persistent shape");
@@ -537,7 +548,6 @@ SH
     EXT="$repo/.omp/extensions/fm-primary-omp-watch.ts" node --input-type=module 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
 import { writeFileSync, existsSync, readFileSync } from "node:fs";
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const handlers = new Map(); let tool = null; let command = null; const sent = [];
 const pi = {
   on(e, h) { handlers.set(e, h); },
@@ -548,6 +558,8 @@ const pi = {
 };
 const mod = await import(pathToFileURL(process.env.EXT).href);
 mod.default(pi);
+await handlers.get("session_start")({}, {});
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 if (!tool || tool.name !== "fm_watch_arm_omp") throw new Error("fm_watch_arm_omp was not registered");
 if (!command) throw new Error("/fm-watch-arm-omp was not registered");
 if (tool.parameters?.type !== "object") throw new Error("tool parameters must be an empty object schema");
@@ -574,14 +586,194 @@ EOF
   pass ".omp watch extension: fm_watch_arm_omp arms once, repeats as a no-op, and delivers an actionable close as one follow-up"
 }
 
-test_detection_anchored_name_and_marker_precedence
-test_lock_identity_and_liveness_classification
-test_spawn_launch_line_and_worker_wiring
-test_spawn_model_validation_scoped_to_listed_providers
-test_secondmate_launch_relies_on_discovery
-test_secondmate_config_pinned_model_is_validated
-test_busy_extension_lifecycle
-test_control_composer_and_model_tables
-test_ownership_proof_is_omp_keyed
+test_watch_replay_and_native_child_ownership() {
+  local repo home out status
+  repo="$TMP_ROOT/replay/repo"; home="$TMP_ROOT/replay/home"
+  install_omp_extension_fixture "$repo"
+  mkdir -p "$home/state"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+[ "${1-}" = --handling-delivered ] && exit 0
+printf '%s\n' "$$" >> "$FM_HOME/state/arms"
+printf 'watcher: started pid=%s (beacon 0s) recovery-generation=replay\n' "$$"
+trap 'exit 0' TERM
+while :; do sleep 0.1; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" EXT="$repo/.omp/extensions/fm-primary-omp-watch.ts" node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from "node:fs";
+const state = `${process.env.FM_HOME}/state`;
+const handoff = `${state}/extensions/omp-primary-watch/session-replacement-actionable.json`;
+mkdirSync(`${state}/extensions/omp-primary-watch`, { recursive: true });
+mkdirSync(`${state}/procevent-inbox`);
+writeFileSync(`${state}/.lock`, `${process.pid}\n`);
+// More than twenty old notifications, plus a genuine pending result, a different
+// source, and a symlink masquerading as an acknowledgement.
+const pending = Array.from({ length: 24 }, (_, i) => ({
+  version: 1, token: `1-1-${i + 1}`,
+  message: `check: process-event result captured: procevent:source:${i + 1}`,
+  predecessorArmPid: "",
+}));
+for (let i = 1; i <= 21; i++) writeFileSync(`${state}/procevent-inbox/source.${i}.handled`, "");
+pending[22].message = "check: process-event result captured: procevent:other:21";
+symlinkSync(`${state}/procevent-inbox/source.21.handled`, `${state}/procevent-inbox/source.24.handled`);
+writeFileSync(handoff, JSON.stringify({ version: 2, pending }));
+const mod = await import(pathToFileURL(process.env.EXT).href);
+function host() {
+  const handlers = new Map(), sent = [];
+  let tool;
+  mod.default({
+    on(event, handler) { handlers.set(event, handler); },
+    registerTool(value) { tool = value; },
+    registerCommand() {},
+    sendUserMessage(message) { sent.push(message); },
+  });
+  return { handlers, sent, tool };
+}
+async function waitFor(check, label) {
+  for (let i = 0; i < 300; i++) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(label);
+}
+const main = host();
+await main.handlers.get("session_start")({}, {});
+await waitFor(() => main.sent.length >= 3, "true pending events were lost");
+if (main.sent.some((text) => /procevent:source:(?:[1-9]|1[0-9]|20|21)\n/.test(text))) throw new Error("handled events replayed");
+const armsBefore = readFileSync(`${state}/arms`, "utf8");
+const child = host();
+const childContext = { sessionManager: { getEntries: () => [{ type: "session_init" }] } };
+await child.handlers.get("session_start")({}, childContext);
+await child.handlers.get("session_shutdown")({}, childContext);
+if (child.sent.length) throw new Error("native child stole pending notifications");
+const repair = await main.tool.execute();
+if (!repair.details.ok || !repair.details.message.includes("unchanged")) throw new Error(`child disabled primary repair: ${repair.content[0].text}`);
+if (readFileSync(`${state}/arms`, "utf8") !== armsBefore) throw new Error("child spawned a second supervision owner");
+// Consumption, not send acceptance, removes one handoff. Restart keeps the other two.
+await main.handlers.get("message_start")({ message: { role: "user", content: [{ type: "text", text: main.sent[0] }] } }, {});
+await main.handlers.get("session_shutdown")({}, {});
+if (JSON.parse(readFileSync(handoff, "utf8")).pending.length !== 2) throw new Error("shutdown did not preserve exactly the unconsumed events");
+const replacement = host();
+// A top-level fork also has parentSession; it must remain eligible.
+await replacement.handlers.get("session_start")({}, { sessionManager: { getEntries: () => [], getHeader: () => ({ parentSession: "parent" }) } });
+await waitFor(() => replacement.sent.length === 2, "restart failed to replay genuine pending notifications");
+if (replacement.sent.includes(main.sent[0])) throw new Error("restart replayed consumed notification");
+for (const prompt of replacement.sent) await replacement.handlers.get("before_agent_start")({ prompt }, {});
+await replacement.handlers.get("session_shutdown")({}, {});
+if (existsSync(handoff)) throw new Error("consumed replacement notifications survived shutdown");
+const final = host();
+await final.handlers.get("session_start")({}, {});
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (final.sent.length) throw new Error("clean startup replayed old notifications");
+await final.handlers.get("session_shutdown")({}, {});
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "omp replay and child ownership: $out"
+  pass ".omp watcher: acknowledged events stay handled, unconsumed events survive, native children cannot steal supervision"
+}
+
+test_watch_multi_key_reconciliation_and_live_close_rearm() {
+  local repo home out status
+  repo="$TMP_ROOT/multikey/repo"; home="$TMP_ROOT/multikey/home"
+  install_omp_extension_fixture "$repo"
+  mkdir -p "$home/state"
+  # The first arm child closes, once released, with an already-acknowledged
+  # single-key result; every successor stays up.
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+[ "${1-}" = --handling-delivered ] && exit 0
+printf '%s\n' "$$" >> "${FM_HOME:?}/state/arms"
+printf 'watcher: started pid=%s (beacon 0s) recovery-generation=multikey\n' "$$"
+if [ ! -e "$FM_HOME/state/.first-arm" ]; then
+  : > "$FM_HOME/state/.first-arm"
+  while [ ! -e "$FM_HOME/state/.release" ]; do sleep 0.05; done
+  printf 'check: process-event result captured: procevent:live:1\n'
+  exit 0
+fi
+trap 'exit 0' TERM
+while :; do sleep 0.1; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_OMP_ARM_READY_TIMEOUT_MS=3000 FM_WATCH_REARM_RETRY_LIMIT=1 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 \
+    EXT="$repo/.omp/extensions/fm-primary-omp-watch.ts" node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+const state = `${process.env.FM_HOME}/state`;
+const handoff = `${state}/extensions/omp-primary-watch/session-replacement-actionable.json`;
+mkdirSync(`${state}/extensions/omp-primary-watch`, { recursive: true });
+mkdirSync(`${state}/procevent-inbox`);
+writeFileSync(`${state}/.lock`, `${process.pid}\n`);
+for (const key of ["multi.1", "multi.2", "multi.3", "multi.5", "live.1"]) writeFileSync(`${state}/procevent-inbox/${key}.handled`, "");
+const reasons = [
+  "check: process-event result captured: procevent:multi:1 procevent:multi:2",
+  "check: process-event result captured: procevent:multi:3 procevent:multi:4",
+  "check: process-event result captured: procevent:multi:5; process-event source stranded: procevent:multi:stranded:1",
+  "check: process-event source stranded: procevent:multi:stranded:2",
+];
+writeFileSync(handoff, JSON.stringify({
+  version: 2,
+  pending: reasons.map((message, i) => ({ version: 1, token: `1-1-${i + 1}`, message, predecessorArmPid: "" })),
+}));
+const mod = await import(pathToFileURL(process.env.EXT).href);
+const handlers = new Map(), sent = [];
+let tool;
+mod.default({
+  on(event, handler) { handlers.set(event, handler); },
+  registerTool(value) { tool = value; },
+  registerCommand() {},
+  sendUserMessage(message) { sent.push(message); },
+});
+async function waitFor(check, label) {
+  for (let i = 0; i < 300; i++) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(label);
+}
+const arms = () => readFileSync(`${state}/arms`, "utf8").trim().split("\n").filter(Boolean).length;
+await handlers.get("session_start")({}, {});
+await waitFor(() => sent.length >= 3, "unhandled or mixed replacement wakes were lost");
+await new Promise((resolve) => setTimeout(resolve, 200));
+if (sent.length !== 3) throw new Error(`expected exactly the three unhandled wakes, saw ${sent.length}: ${JSON.stringify(sent)}`);
+if (sent.some((text) => text.includes("captured: procevent:multi:1 "))) throw new Error("a fully acknowledged multi-key wake replayed");
+for (const needle of ["procevent:multi:3 procevent:multi:4", "procevent:multi:5; process-event source stranded", "stranded: procevent:multi:stranded:2"]) {
+  if (!sent.some((text) => text.includes(needle))) throw new Error(`replay dropped the wake carrying ${needle}`);
+}
+if (arms() !== 1) throw new Error(`replay must run on the startup arm alone, saw ${arms()} arms`);
+// The live watcher now closes with a result main already acknowledged.
+writeFileSync(`${state}/.release`, "");
+await waitFor(() => arms() === 2, "handled live close left supervision without a successor");
+await new Promise((resolve) => setTimeout(resolve, 200));
+if (sent.length !== 3) throw new Error(`handled live close must not notify main, saw ${sent.length}: ${JSON.stringify(sent)}`);
+const repair = await tool.execute();
+if (!repair.details.ok || !repair.details.message.includes("unchanged")) throw new Error(`successor is not owned after the handled close: ${repair.content[0].text}`);
+await handlers.get("session_shutdown")({}, {});
+const persisted = JSON.parse(readFileSync(handoff, "utf8")).pending.map((item) => item.message);
+if (persisted.length !== 3 || persisted.some((message) => /procevent:(?:multi:1 |live:1)/.test(message))) throw new Error(`shutdown persisted the wrong records: ${JSON.stringify(persisted)}`);
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "omp multi-key reconciliation and live re-arm: $out"
+  pass ".omp watcher: multi-key acknowledged wakes stay handled, mixed reasons replay, a handled live close still restores a successor"
+}
+
+if [ "${FM_OMP_EXTENSIONS_ONLY:-0}" != 1 ]; then
+  test_detection_anchored_name_and_marker_precedence
+  test_lock_identity_and_liveness_classification
+  test_spawn_launch_line_and_worker_wiring
+  test_spawn_model_validation_scoped_to_listed_providers
+  test_secondmate_launch_relies_on_discovery
+  test_secondmate_config_pinned_model_is_validated
+  test_busy_extension_lifecycle
+  test_control_composer_and_model_tables
+  test_ownership_proof_is_omp_keyed
+fi
 test_turnend_guard_extension_compels_one_continuation
 test_watch_extension_arms_and_delivers
+test_watch_replay_and_native_child_ownership
+test_watch_multi_key_reconciliation_and_live_close_rearm

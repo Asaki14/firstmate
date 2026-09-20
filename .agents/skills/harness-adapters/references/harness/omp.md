@@ -44,6 +44,8 @@ The captain's own `~/.omp/agent/config.yml` is never written; the tracked `.omp/
 omp auto-discovers `<cwd>/.omp/extensions/*.ts` (top level only, cwd only, no ancestor walk, no trust dialog) and the active profile's `agent/extensions/`; `.pi/extensions/` is not a discovery root.
 A file that is both auto-discovered and named with `-e` loads twice, so the per-task worker extension lives in `state/` and a secondmate launch names no `-e` at all.
 There is no `agent_settled` event; `agent_end` plus `willContinue` replaces it.
+Native children can reuse the primary's imported extension factories within the same process; `.omp/extensions/lib/fm-primary-session.ts` identifies their executor-written `session_init` entry before either primary extension activates a generation.
+Do not use a process id or the `parentSession` header alone to distinguish them: children share the primary pid, and top-level forks also have a parent session.
 
 ## Primary integration
 
