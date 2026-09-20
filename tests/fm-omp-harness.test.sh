@@ -676,6 +676,92 @@ EOF
   pass ".omp watcher: acknowledged events stay handled, unconsumed events survive, native children cannot steal supervision"
 }
 
+test_watch_multi_key_reconciliation_and_live_close_rearm() {
+  local repo home out status
+  repo="$TMP_ROOT/multikey/repo"; home="$TMP_ROOT/multikey/home"
+  install_omp_extension_fixture "$repo"
+  mkdir -p "$home/state"
+  # The first arm child closes, once released, with an already-acknowledged
+  # single-key result; every successor stays up.
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+[ "${1-}" = --handling-delivered ] && exit 0
+printf '%s\n' "$$" >> "${FM_HOME:?}/state/arms"
+printf 'watcher: started pid=%s (beacon 0s) recovery-generation=multikey\n' "$$"
+if [ ! -e "$FM_HOME/state/.first-arm" ]; then
+  : > "$FM_HOME/state/.first-arm"
+  while [ ! -e "$FM_HOME/state/.release" ]; do sleep 0.05; done
+  printf 'check: process-event result captured: procevent:live:1\n'
+  exit 0
+fi
+trap 'exit 0' TERM
+while :; do sleep 0.1; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_OMP_ARM_READY_TIMEOUT_MS=3000 FM_WATCH_REARM_RETRY_LIMIT=1 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 \
+    EXT="$repo/.omp/extensions/fm-primary-omp-watch.ts" node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+const state = `${process.env.FM_HOME}/state`;
+const handoff = `${state}/extensions/omp-primary-watch/session-replacement-actionable.json`;
+mkdirSync(`${state}/extensions/omp-primary-watch`, { recursive: true });
+mkdirSync(`${state}/procevent-inbox`);
+writeFileSync(`${state}/.lock`, `${process.pid}\n`);
+for (const key of ["multi.1", "multi.2", "multi.3", "multi.5", "live.1"]) writeFileSync(`${state}/procevent-inbox/${key}.handled`, "");
+const reasons = [
+  "check: process-event result captured: procevent:multi:1 procevent:multi:2",
+  "check: process-event result captured: procevent:multi:3 procevent:multi:4",
+  "check: process-event result captured: procevent:multi:5; process-event source stranded: procevent:multi:stranded:1",
+  "check: process-event source stranded: procevent:multi:stranded:2",
+];
+writeFileSync(handoff, JSON.stringify({
+  version: 2,
+  pending: reasons.map((message, i) => ({ version: 1, token: `1-1-${i + 1}`, message, predecessorArmPid: "" })),
+}));
+const mod = await import(pathToFileURL(process.env.EXT).href);
+const handlers = new Map(), sent = [];
+let tool;
+mod.default({
+  on(event, handler) { handlers.set(event, handler); },
+  registerTool(value) { tool = value; },
+  registerCommand() {},
+  sendUserMessage(message) { sent.push(message); },
+});
+async function waitFor(check, label) {
+  for (let i = 0; i < 300; i++) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(label);
+}
+const arms = () => readFileSync(`${state}/arms`, "utf8").trim().split("\n").filter(Boolean).length;
+await handlers.get("session_start")({}, {});
+await waitFor(() => sent.length >= 3, "unhandled or mixed replacement wakes were lost");
+await new Promise((resolve) => setTimeout(resolve, 200));
+if (sent.length !== 3) throw new Error(`expected exactly the three unhandled wakes, saw ${sent.length}: ${JSON.stringify(sent)}`);
+if (sent.some((text) => text.includes("captured: procevent:multi:1 "))) throw new Error("a fully acknowledged multi-key wake replayed");
+for (const needle of ["procevent:multi:3 procevent:multi:4", "procevent:multi:5; process-event source stranded", "stranded: procevent:multi:stranded:2"]) {
+  if (!sent.some((text) => text.includes(needle))) throw new Error(`replay dropped the wake carrying ${needle}`);
+}
+if (arms() !== 1) throw new Error(`replay must run on the startup arm alone, saw ${arms()} arms`);
+// The live watcher now closes with a result main already acknowledged.
+writeFileSync(`${state}/.release`, "");
+await waitFor(() => arms() === 2, "handled live close left supervision without a successor");
+await new Promise((resolve) => setTimeout(resolve, 200));
+if (sent.length !== 3) throw new Error(`handled live close must not notify main, saw ${sent.length}: ${JSON.stringify(sent)}`);
+const repair = await tool.execute();
+if (!repair.details.ok || !repair.details.message.includes("unchanged")) throw new Error(`successor is not owned after the handled close: ${repair.content[0].text}`);
+await handlers.get("session_shutdown")({}, {});
+const persisted = JSON.parse(readFileSync(handoff, "utf8")).pending.map((item) => item.message);
+if (persisted.length !== 3 || persisted.some((message) => /procevent:(?:multi:1 |live:1)/.test(message))) throw new Error(`shutdown persisted the wrong records: ${JSON.stringify(persisted)}`);
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "omp multi-key reconciliation and live re-arm: $out"
+  pass ".omp watcher: multi-key acknowledged wakes stay handled, mixed reasons replay, a handled live close still restores a successor"
+}
+
 if [ "${FM_OMP_EXTENSIONS_ONLY:-0}" != 1 ]; then
   test_detection_anchored_name_and_marker_precedence
   test_lock_identity_and_liveness_classification
@@ -690,3 +776,4 @@ fi
 test_turnend_guard_extension_compels_one_continuation
 test_watch_extension_arms_and_delivers
 test_watch_replay_and_native_child_ownership
+test_watch_multi_key_reconciliation_and_live_close_rearm

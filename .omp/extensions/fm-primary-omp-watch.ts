@@ -261,6 +261,32 @@ function nodeErrorCode(error: unknown): string {
     : "";
 }
 
+// The captured keys of a wake whose reason names nothing else. fm-watch.sh
+// appends every not-yet-surfaced captured key to one line and joins stranded or
+// unstarted sources with ";"; those carry no handled marker and never match.
+function capturedProcessEventKeys(message: string): { id: string; seq: string }[] {
+  const captured = /^check: process-event result captured:((?: procevent:[A-Za-z0-9._-]+:[0-9]+)+)$/.exec(message);
+  if (!captured) return [];
+  return captured[1].trim().split(" ").map((key) => {
+    const [, id, seq] = key.split(":");
+    return { id, seq };
+  });
+}
+
+// True only when every captured key carries the handler's durable
+// acknowledgement, checked through the same library that writes it.
+function capturedResultsHandled(message: string): boolean {
+  const keys = capturedProcessEventKeys(message);
+  if (keys.length === 0) return false;
+  const handled = spawnSync("bash", [
+    "-c",
+    'unset FM_PROCEVENT_CAPTURE_PINNED_INBOX; . "$1/fm-pr-lib.sh"; . "$1/fm-procevent-lib.sh"; state=$2; shift 2; while [ $# -ge 2 ]; do fm_procevent_source_id_valid "$1" && fm_procevent_is_handled "$state" "$1" "$2" || exit 1; shift 2; done',
+    "omp-replay",
+    `${fmRoot}/bin`, state, ...keys.flatMap((key) => [key.id, key.seq]),
+  ], { encoding: "utf8" });
+  return handled.status === 0;
+}
+
 function createPendingActionable(message: string, predecessorArmPid: string): PendingActionableClose {
   return {
     version: 1,
@@ -669,19 +695,19 @@ export default function (pi: ExtensionAPI) {
         );
         if (!pending) break;
         // A replacement handoff predates the handler's durable acknowledgement.
-        // Reconcile only an exact process-result identity, never age or queue absence.
-        const captured = /^check: process-event result captured: procevent:([^:\n]+):([0-9]+)$/.exec(pending.message);
-        if (captured) {
-          const handled = spawnSync("bash", [
-            "-c",
-            'unset FM_PROCEVENT_CAPTURE_PINNED_INBOX; . "$1/fm-pr-lib.sh"; . "$1/fm-procevent-lib.sh"; fm_procevent_source_id_valid "$3" && fm_procevent_is_handled "$2" "$3" "$4"',
-            "omp-replay",
-            `${fmRoot}/bin`, state, captured[1], captured[2],
-          ], { encoding: "utf8" });
-          if (handled.status === 0) {
-            pending.delivered = true;
-            continue;
+        // Reconcile only exact process-result identities, never age or queue
+        // absence: a wake carrying anything but captured keys always replays.
+        if (capturedResultsHandled(pending.message)) {
+          // A live close has no child; the handled wake needs no follow-up but
+          // supervision still needs its verified successor.
+          if (!owner.child && !owner.retryTimer) {
+            owner.deferredClose = null;
+            const restoration = await restoreAfterActionableClose(owner, pending.predecessorArmPid);
+            if (!generationIsLive(owner)) return;
+            if (restoration.failure) surfaceFailure(owner, restoration.failure);
           }
+          pending.delivered = true;
+          continue;
         }
         const existingClaim = replacementCoordinator.deliveries.get(pending.token);
         if (existingClaim && existingClaim.owner !== owner) {
