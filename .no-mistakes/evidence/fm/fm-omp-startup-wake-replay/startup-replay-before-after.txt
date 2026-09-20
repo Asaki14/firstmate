@@ -1,0 +1,39 @@
+=== BEFORE fix (base cae9102) ===
+extension: base cae9102 fm-primary-omp-watch.ts
+handoff records at startup: 27 (24 already acknowledged via .handled, 3 unconsumed)
+v1 watcher messages injected into main at session_start: 27
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-1:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-2:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-3:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-4:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-5:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-6:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-7:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-8:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-9:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-10:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-11:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-12:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-13:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-14:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-15:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-16:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-17:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-18:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-19:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-20:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-21:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-22:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-23:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:pr-24:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:fresh:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:batch:1 procevent:batch:2
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event source stranded: procevent:worker:1
+
+=== AFTER fix (target 4fb4120) ===
+extension: target 4fb4120 fm-primary-omp-watch.ts
+handoff records at startup: 27 (24 already acknowledged via .handled, 3 unconsumed)
+v1 watcher messages injected into main at session_start: 3
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:fresh:1
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:batch:1 procevent:batch:2
+  - FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event source stranded: procevent:worker:1

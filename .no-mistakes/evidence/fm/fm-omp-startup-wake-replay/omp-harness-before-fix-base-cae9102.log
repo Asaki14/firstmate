@@ -1,0 +1,10 @@
+not ok - omp turn-end guard extension contract: file:///private/tmp/fm-omp-base.nQLx0w/[eval1]:18
+if (await childHandlers.get("before_agent_start")({ prompt: "child" }, childCtx)) throw new Error("child claimed primary startup");
+                                                                                        ^
+
+Error: child claimed primary startup
+    at file:///private/tmp/fm-omp-base.nQLx0w/[eval1]:18:89
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+
+Node.js v26.0.0: expected exit 0, got 1
+exit=1

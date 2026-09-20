@@ -1,0 +1,9 @@
+not ok - omp replay and child ownership: file:///private/tmp/fm-omp-base.nQLx0w/[eval1]:41
+if (main.sent.some((text) => /procevent:source:(?:[1-9]|1[0-9]|20|21)\n/.test(text))) throw new Error("handled events replayed");
+                                                                                            ^
+
+Error: handled events replayed
+    at file:///private/tmp/fm-omp-base.nQLx0w/[eval1]:41:93
+
+Node.js v26.0.0: expected exit 0, got 1
+exit=1

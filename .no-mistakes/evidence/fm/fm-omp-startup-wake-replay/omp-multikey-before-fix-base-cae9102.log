@@ -1,0 +1,9 @@
+not ok - omp multi-key reconciliation and live re-arm: file:///private/tmp/fm-omp-base.nQLx0w/[eval1]:39
+if (sent.length !== 3) throw new Error(`expected exactly the three unhandled wakes, saw ${sent.length}: ${JSON.stringify(sent)}`);
+                             ^
+
+Error: expected exactly the three unhandled wakes, saw 4: ["⁣FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:multi:1 procevent:multi:2\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.","⁣FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:multi:3 procevent:multi:4\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.","⁣FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event result captured: procevent:multi:5; process-event source stranded: procevent:multi:stranded:1\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.","⁣FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: process-event source stranded: procevent:multi:stranded:2\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned."]
+    at file:///private/tmp/fm-omp-base.nQLx0w/[eval1]:39:30
+
+Node.js v26.0.0: expected exit 0, got 1
+exit=1
