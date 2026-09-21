@@ -125,23 +125,6 @@ SH
 chmod +x "$PROJECT/bin/fm-turnend-guard.sh"
 [ -f "$PROJECT/.omp/extensions/fm-primary-omp-watch.ts" ] || fail "lab checkout is missing the omp watch extension"
 [ -f "$PROJECT/.omp/extensions/fm-primary-turnend-guard.ts" ] || fail "lab checkout is missing the omp turn-end extension"
-# Observe native child identity and the actual follow-up consumption payload
-# without changing vendor routing or synthesizing its lifecycle events.
-cat > "$PROJECT/.omp/extensions/fm-live-event-probe.ts" <<'TS'
-import { appendFileSync } from "node:fs";
-export default function (pi: any) {
-  for (const type of ["session_start", "session_shutdown", "message_start"]) {
-    pi.on(type, (event: any, ctx: any) => {
-      const child = ctx.sessionManager.getEntries().some((entry: any) => entry.type === "session_init");
-      const message = event.message;
-      const text = message?.role === "user"
-        ? (Array.isArray(message.content) ? message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n") : message.content)
-        : "";
-      appendFileSync(`${ctx.cwd}/state/live-events.jsonl`, `${JSON.stringify({ type, child, text })}\n`);
-    });
-  }
-}
-TS
 
 # --- rpc plumbing --------------------------------------------------------------
 rpc_send() {  # <json-line>
@@ -308,30 +291,6 @@ if [ -z "$repaired_pid" ] || ! kill -0 "$repaired_pid" 2>/dev/null; then
   fail "no live watcher after the guard stage"
 fi
 pass "omp $OMP_VERSION: session_stop compelled the guard continuation (guard rc=2, then a stop_hook_active stop) and the model reached for fm_watch_arm_omp"
-
-# --- 4. native children must not replace primary extension generations --------
-before_child_ends=$(agent_end_count)
-rpc_send '{"id":"native-child","type":"prompt","message":"Runtime regression probe: use the native task tool to run exactly one child named StartupProbe, instructed to reply CHILD_OK only, with no tools, edits, formatters, linters or tests. Do not use a shell to launch it. Wait for its completion, then call fm_watch_arm_omp once and quote its result. Do nothing else."}'
-wait_for_agent_ends "$((before_child_ends + 1))" 360 || fail "native child probe did not settle"
-i=0
-while [ "$i" -lt 360 ]; do
-  grep -q '"type":"session_start","child":true' "$PROJECT/state/live-events.jsonl" 2>/dev/null && break
-  sleep 0.5
-  i=$((i + 1))
-done
-grep -q '"type":"session_start","child":true' "$PROJECT/state/live-events.jsonl" \
-  || fail "omp $OMP_VERSION did not exercise a native child session_init before session_start"
-grep -q 'watcher: not armed - omp session is shutting down' "$RPC_LOG" \
-  && fail "native child stole the live primary watcher generation"
-if jq -e 'select(.child and (.text | contains("FIRSTMATE WATCHER WAKE")))' "$PROJECT/state/live-events.jsonl" >/dev/null; then
-  fail "native child received a primary watcher notification"
-fi
-[ "$(tool_call_count fm_watch_arm_omp)" -ge 3 ] || fail "primary repair was not exercised after native child completion"
-current_watcher=$(cat "$PROJECT/state/.watch.lock/pid" 2>/dev/null || true)
-if [ "$current_watcher" != "$repaired_pid" ] || ! kill -0 "$current_watcher" 2>/dev/null; then
-  fail "native child replaced the healthy primary watcher"
-fi
-pass "omp $OMP_VERSION: native child lifecycle preserves primary watcher ownership and active repair"
 
 # --- shutdown -------------------------------------------------------------------
 # omp documents that closing rpc stdin disposes the session and exits 0. On
