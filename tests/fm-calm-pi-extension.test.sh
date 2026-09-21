@@ -8,9 +8,11 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-calm-pi-extension)
 EXT="$ROOT/.pi/extensions/fm-calm.ts"
 ASSISTANT_LAYOUT="$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+PRESERVATION="$ROOT/.pi/extensions/lib/fm-calm-preservation.ts"
 OPERATIONAL_USER_LAYOUT="$ROOT/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
 VISIBILITY="$ROOT/.pi/extensions/lib/fm-calm-visibility.ts"
 WORKING_SHIP="$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts"
+WORKING_SHIP_SPRITE="$ROOT/.pi/extensions/lib/fm-calm-working-ship-sprite.ts"
 WATCH_EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 OPERATIONAL_INPUT="$ROOT/bin/fm-operational-input.sh"
 PI_OPERATIONAL_INPUT="$ROOT/.pi/extensions/lib/fm-operational-input.ts"
@@ -168,9 +170,11 @@ test_home_resolution() {
     "$fixture/launch-cwd"
   cp "$EXT" "$fixture/project/.pi/extensions/fm-calm.ts"
   cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$PRESERVATION" "$fixture/project/.pi/extensions/lib/fm-calm-preservation.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
   cp "$VISIBILITY" "$fixture/project/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$WORKING_SHIP_SPRITE" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship-sprite.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
   ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/project/node_modules/@earendil-works/pi-tui"
@@ -290,9 +294,11 @@ test_pi_compat_degraded_adapter() {
     "$fixture/project/node_modules/@earendil-works"
   cp "$EXT" "$fixture/project/.pi/extensions/fm-calm.ts"
   cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$PRESERVATION" "$fixture/project/.pi/extensions/lib/fm-calm-preservation.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
   cp "$VISIBILITY" "$fixture/project/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$WORKING_SHIP_SPRITE" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship-sprite.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
   ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/project/node_modules/@earendil-works/pi-tui"
@@ -389,9 +395,11 @@ test_pi_compat_missing_adapter_exports() {
     "$fixture/project/.pi/extensions/lib" \
     "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
   cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$PRESERVATION" "$fixture/project/.pi/extensions/lib/fm-calm-preservation.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
   cp "$VISIBILITY" "$fixture/project/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$WORKING_SHIP_SPRITE" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship-sprite.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
   printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
   printf '%s\n' \
@@ -449,9 +457,11 @@ test_builtin_gate_load_time() {
     "$fixture/home-on/config"
   cp "$EXT" "$fixture/project/.pi/extensions/fm-calm.ts"
   cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$PRESERVATION" "$fixture/project/.pi/extensions/lib/fm-calm-preservation.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
   cp "$VISIBILITY" "$fixture/project/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$WORKING_SHIP_SPRITE" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship-sprite.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
   ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/project/node_modules/@earendil-works/pi-tui"
@@ -535,9 +545,11 @@ test_calm_activation_collision_and_regression_bound() {
     "$fixture/home/config"
   cp "$EXT" "$fixture/project/.pi/extensions/fm-calm.ts"
   cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$PRESERVATION" "$fixture/project/.pi/extensions/lib/fm-calm-preservation.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
   cp "$VISIBILITY" "$fixture/project/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$WORKING_SHIP_SPRITE" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship-sprite.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
   ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/project/node_modules/@earendil-works/pi-tui"
@@ -749,9 +761,11 @@ test_rendering_and_session_lifecycle() {
   mkdir -p "$fixture/home" "$fixture/lib" "$fixture/node_modules/@earendil-works"
   cp "$EXT" "$fixture/fm-calm.ts"
   cp "$ASSISTANT_LAYOUT" "$fixture/lib/fm-calm-assistant-layout.ts"
+  cp "$PRESERVATION" "$fixture/lib/fm-calm-preservation.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$fixture/lib/fm-calm-operational-user-layout.ts"
   cp "$VISIBILITY" "$fixture/lib/fm-calm-visibility.ts"
   cp "$WORKING_SHIP" "$fixture/lib/fm-calm-working-ship.ts"
+  cp "$WORKING_SHIP_SPRITE" "$fixture/lib/fm-calm-working-ship-sprite.ts"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$fixture/lib/fm-operational-input.ts"
   cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$fixture/lib/fm-branch-dispatch.ts"
   cp "$ROOT/.pi/extensions/lib/fm-native-contract.ts" "$fixture/lib/fm-native-contract.ts"
@@ -1466,9 +1480,11 @@ test_calm_mid_turn_working_notes() {
   mkdir -p "$fixture/home" "$fixture/lib" "$fixture/node_modules/@earendil-works"
   cp "$EXT" "$fixture/fm-calm.ts"
   cp "$ASSISTANT_LAYOUT" "$fixture/lib/fm-calm-assistant-layout.ts"
+  cp "$PRESERVATION" "$fixture/lib/fm-calm-preservation.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$fixture/lib/fm-calm-operational-user-layout.ts"
   cp "$VISIBILITY" "$fixture/lib/fm-calm-visibility.ts"
   cp "$WORKING_SHIP" "$fixture/lib/fm-calm-working-ship.ts"
+  cp "$WORKING_SHIP_SPRITE" "$fixture/lib/fm-calm-working-ship-sprite.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/lib/fm-operational-input.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/node_modules/@earendil-works/pi-coding-agent"
   ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
@@ -1493,6 +1509,7 @@ setCapabilities({ images: null, trueColor: true, hyperlinks: false });
 // the same module URLs, so they share one live visibility policy exactly the way a
 // single Pi process does.
 const visibility = await import(pathToFileURL(`${process.cwd()}/lib/fm-calm-visibility.ts`).href);
+const preservation = await import(pathToFileURL(`${process.cwd()}/lib/fm-calm-preservation.ts`).href);
 const calmPreferencePath = `${process.env.FM_HOME}/config/calm`;
 const components = [];
 const ui = {
@@ -1554,12 +1571,49 @@ const assistantBase = {
   timestamp: 1,
 };
 const toolCall = { type: "toolCall", id: "calm-mid-turn-tool", name: "read", arguments: { path: "sample.txt" } };
+const substantiveLongText = "SUBSTANTIVE_LONG_MIDTURN_REPORT " + "context ".repeat(35);
+const substantiveMultilineText = "SUBSTANTIVE_MIDTURN_REPORT\nAdditional context needed to continue.";
+const belowThresholdText = "b".repeat(preservation.CALM_PRESERVE_MIN_CHARS - 1);
+const atThresholdText = "t".repeat(preservation.CALM_PRESERVE_MIN_CHARS);
+if (preservation.CALM_PRESERVE_MIN_CHARS !== 240) {
+  throw new Error(`Pi Calm preservation threshold changed to ${preservation.CALM_PRESERVE_MIN_CHARS}`);
+}
 const messages = {
   // The reported incident: narration emitted in the same assistant message as a tool call.
   midTurn: {
     ...assistantBase,
     stopReason: "toolUse",
     content: [{ type: "text", text: "MIDTURN_WORKING_NOTE" }, toolCall],
+  },
+  // Substantive mid-turn content must remain visible even when the message also calls a tool.
+  substantiveLong: {
+    ...assistantBase,
+    stopReason: "toolUse",
+    content: [{ type: "text", text: substantiveLongText }, toolCall],
+  },
+  substantiveMultiline: {
+    ...assistantBase,
+    stopReason: "toolUse",
+    content: [{ type: "text", text: substantiveMultilineText }, toolCall],
+  },
+  belowThreshold: {
+    ...assistantBase,
+    stopReason: "toolUse",
+    content: [{ type: "text", text: belowThresholdText }, toolCall],
+  },
+  atThreshold: {
+    ...assistantBase,
+    stopReason: "toolUse",
+    content: [{ type: "text", text: atThresholdText }, toolCall],
+  },
+  mixedBlocks: {
+    ...assistantBase,
+    stopReason: "toolUse",
+    content: [
+      { type: "text", text: "MIXED_SHORT_WORKING_NOTE" },
+      { type: "text", text: substantiveLongText },
+      toolCall,
+    ],
   },
   // The genuine reply that ends a response, which Calm never hides.
   finalReply: {
@@ -1626,8 +1680,14 @@ if (readFileSync(calmPreferencePath, "utf8") !== "on\n") {
   throw new Error("plain /calm from off did not persist on");
 }
 if (rendered("midTurn").length !== 0) {
-  throw new Error(`Calm on left mid-turn working-note rows: ${JSON.stringify(rendered("midTurn"))}`);
+  throw new Error(`Calm on left short mid-turn working-note rows: ${JSON.stringify(rendered("midTurn"))}`);
 }
+requireVisible("substantiveLong", "SUBSTANTIVE_LONG_MIDTURN_REPORT", "Calm on");
+requireVisible("substantiveMultiline", "SUBSTANTIVE_MIDTURN_REPORT", "Calm on");
+requireHidden("belowThreshold", belowThresholdText.slice(0, 32), "Calm on");
+requireVisible("atThreshold", atThresholdText.slice(0, 32), "Calm on");
+requireHidden("mixedBlocks", "MIXED_SHORT_WORKING_NOTE", "Calm on");
+requireVisible("mixedBlocks", "SUBSTANTIVE_LONG_MIDTURN_REPORT", "Calm on");
 requireHidden("truncatedMidTurn", "TRUNCATED_MIDTURN_NOTE", "Calm on");
 // Pi owns the wording of its truncation notice; Calm must leave that row's own notice
 // standing rather than collapsing an incomplete response to nothing.
@@ -1726,9 +1786,11 @@ test_operational_followup_turn_e2e() {
   fm_git_init_commit "$project"
   cp "$EXT" "$project/.pi/extensions/fm-calm.ts"
   cp "$ASSISTANT_LAYOUT" "$project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$PRESERVATION" "$project/.pi/extensions/lib/fm-calm-preservation.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
   cp "$VISIBILITY" "$project/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$WORKING_SHIP" "$project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$WORKING_SHIP_SPRITE" "$project/.pi/extensions/lib/fm-calm-working-ship-sprite.ts"
   cp "$PI_OPERATIONAL_INPUT" "$project/.pi/extensions/lib/fm-operational-input.ts"
   printf '%s\n' '{"followUpMode":"all"}' >"$config/settings.json"
 
@@ -2100,9 +2162,11 @@ test_hidden_block_geometry_e2e() {
   fm_git_init_commit "$project"
   cp "$EXT" "$project/.pi/extensions/fm-calm.ts"
   cp "$ASSISTANT_LAYOUT" "$project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$PRESERVATION" "$project/.pi/extensions/lib/fm-calm-preservation.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
   cp "$VISIBILITY" "$project/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$WORKING_SHIP" "$project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$WORKING_SHIP_SPRITE" "$project/.pi/extensions/lib/fm-calm-working-ship-sprite.ts"
   cp "$PI_OPERATIONAL_INPUT" "$project/.pi/extensions/lib/fm-operational-input.ts"
   printf '%s\n' on >"$home/config/calm"
   printf '%s\n' '{"hideThinkingBlock":true,"terminal":{"clearOnShrink":false}}' >"$config/settings.json"
@@ -2334,9 +2398,11 @@ test_working_ship_geometry_and_lifecycle() {
   mkdir -p "$fixture/home" "$fixture/lib" "$fixture/node_modules/@earendil-works"
   cp "$EXT" "$fixture/fm-calm.ts"
   cp "$ASSISTANT_LAYOUT" "$fixture/lib/fm-calm-assistant-layout.ts"
+  cp "$PRESERVATION" "$fixture/lib/fm-calm-preservation.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$fixture/lib/fm-calm-operational-user-layout.ts"
   cp "$VISIBILITY" "$fixture/lib/fm-calm-visibility.ts"
   cp "$WORKING_SHIP" "$fixture/lib/fm-calm-working-ship.ts"
+  cp "$WORKING_SHIP_SPRITE" "$fixture/lib/fm-calm-working-ship-sprite.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/lib/fm-operational-input.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/node_modules/@earendil-works/pi-coding-agent"
   ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
@@ -2367,9 +2433,7 @@ const {
 
 const ESC = "\u001b";
 const BLUE = `${ESC}[34m`;
-const CYAN = `${ESC}[36m`;
 const YELLOW = `${ESC}[33m`;
-const RED = `${ESC}[31m`;
 const RESET = `${ESC}[39m`;
 const SAIL = "◿│◣";
 const HULL = "╲▁▁▁╱";
@@ -2508,7 +2572,7 @@ const sailOf = (frame) => strip(frame[0]).includes(SAIL) ? SAIL : "none";
       const codes = row.match(new RegExp(`${ESC}\\[[0-9;]*m`, "g")) ?? [];
       for (const code of codes) {
         check(
-          code === BLUE || code === CYAN || code === YELLOW || code === RED || code === RESET,
+          code === BLUE || code === YELLOW || code === RESET,
           `non-standard ANSI escape ${JSON.stringify(code)} in ${JSON.stringify(row)}`,
         );
       }
@@ -2525,19 +2589,31 @@ const sailOf = (frame) => strip(frame[0]).includes(SAIL) ? SAIL : "none";
     const leading = sailRow.slice(0, sailRow.indexOf(ESC));
     check(/^ *$/.test(leading), `sail row padding was colored: ${JSON.stringify(leading)}`);
 
-    // The smaller left sail and mast are yellow, the larger right sail is red, and
-    // zero-height blue water remains visible through all three hull-interior cells.
+    // Both sail halves and the mast are one yellow run, so the sail never splits into
+    // mismatched colors, and the hull is one yellow run whose interior is not blue.
     check(
-      sailRow.includes(`${YELLOW}◿│${RESET}${RED}◣${RESET}`),
-      `sail did not keep its restrained asymmetric colors: ${JSON.stringify(sailRow)}`,
+      sailRow.includes(`${YELLOW}◿│◣${RESET}`),
+      `sail was not painted as one unified yellow run: ${JSON.stringify(sailRow)}`,
     );
     check(
       visibleWidth("◿") === 1 && visibleWidth(SAIL) === 3,
       "the width-safe smaller sail broke the three-cell sprite",
     );
     check(
-      waterRow.includes(`${YELLOW}╲${RESET}${BLUE}▁▁▁${RESET}${YELLOW}╱${RESET}`),
-      `hull did not preserve blue trough water: ${JSON.stringify(waterRow)}`,
+      waterRow.includes(`${YELLOW}╲▁▁▁╱${RESET}`),
+      `hull was not painted as one unified yellow run: ${JSON.stringify(waterRow)}`,
+    );
+    // Every water cell outside the hull is blue whatever its height, so the swell
+    // reads through glyph height alone rather than a crest-versus-trough color split.
+    const waterCells = waterRow.replace(`${YELLOW}╲▁▁▁╱${RESET}`, "").match(/\u001b\[\d+m[▁▂▃▄]\u001b\[39m/g) ?? [];
+    check(waterCells.length > 0, "no colored water cells surrounded the hull");
+    check(
+      waterCells.every((cell) => cell.startsWith(BLUE)),
+      `water was not all blue: ${JSON.stringify(waterCells.filter((cell) => !cell.startsWith(BLUE)))}`,
+    );
+    check(
+      waterCells.some((cell) => cell.includes("▃") || cell.includes("▄")),
+      "the checked frame carried no crest cell, so the all-blue assertion proved nothing",
     );
     check(
       /^[▁▂▃▄╲╱]+$/.test(strip(waterRow)),
@@ -3211,7 +3287,7 @@ JS
   status=$?
   [ "$status" -eq 0 ] || fail "Pi Calm working-ship checks failed: $out"
   [ -z "$out" ] || fail "Pi Calm working-ship test printed output: $out"
-  pass "Pi Calm working ship keeps its centered two-row asymmetric Unicode boat inside a deterministic long-wave trough, preserves blue water through the hull, uses standard blue/cyan/yellow/red with balanced resets, keeps ANSI-stripped width exact, reverses cleanly at both edges and every width, clamps visible and hidden resizes, falls back deterministically when narrow, freezes and resumes across settle/start without hidden-time jumps or duplicate timers, resets only on a fresh session, and leaves Calm-off visibility untouched"
+  pass "Pi Calm working ship keeps its centered two-row asymmetric Unicode boat inside a deterministic long-wave trough, paints all water standard blue and the whole boat standard yellow with balanced resets, keeps ANSI-stripped width exact, reverses cleanly at both edges and every width, clamps visible and hidden resizes, falls back deterministically when narrow, freezes and resumes across settle/start without hidden-time jumps or duplicate timers, resets only on a fresh session, and leaves Calm-off visibility untouched"
 }
 
 # The rendered-DOM assertions below depend on a real browser, so the render step
@@ -3353,9 +3429,11 @@ test_interactive_terminal_e2e() {
   : > "$project/AGENTS.md"
   cp "$EXT" "$project/.pi/extensions/fm-calm.ts"
   cp "$ASSISTANT_LAYOUT" "$project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+  cp "$PRESERVATION" "$project/.pi/extensions/lib/fm-calm-preservation.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
   cp "$VISIBILITY" "$project/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$WORKING_SHIP" "$project/.pi/extensions/lib/fm-calm-working-ship.ts"
+  cp "$WORKING_SHIP_SPRITE" "$project/.pi/extensions/lib/fm-calm-working-ship-sprite.ts"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$project/.pi/extensions/lib/fm-operational-input.ts"
   cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$project/.pi/extensions/lib/fm-branch-dispatch.ts"
   cp "$ROOT/.pi/extensions/lib/fm-native-contract.ts" "$project/.pi/extensions/lib/fm-native-contract.ts"
@@ -3880,8 +3958,8 @@ JS
   assert_not_contains "$boat_hull_line" "Working" "the ship row carried extra status copy"
   printf '%s\n' "$boat_hull_line" | grep -Eq '[▁▂▃▄]' \
     || fail "the working ship rendered no low waveform"
-  # Standard ANSI colors: blue troughs, cyan crests, yellow hull/left sail, red
-  # right sail, and no RGB/256 escapes.
+  # Standard ANSI colors: all water blue at every height, the whole hull and sail
+  # yellow, no cyan crests or red sail half, and no RGB/256 escapes.
   tmux -L "$TMUX_SOCKET" capture-pane -p -e -t "$TMUX_SESSION" >"$boat_color_snapshot"
   boat_color_line=$(grep -F '╲' "$boat_color_snapshot" | head -1)
   boat_sail_line=$(grep -F '◿' "$boat_color_snapshot" | head -1)
@@ -3891,17 +3969,21 @@ JS
     *'[34m'*) : ;;
     *) fail "the trough was not rendered with standard ANSI blue" ;;
   esac
-  case "$boat_color_line" in
-    *'[36m'*) : ;;
-    *) fail "the wave crests were not rendered with standard ANSI cyan" ;;
+  case "$boat_color_line$boat_sail_line" in
+    *'[36m'*) fail "the wave crests were still rendered in a second water color (cyan)" ;;
+    *'[31m'*) fail "the right sail was still rendered in a second boat color (red)" ;;
   esac
   case "$boat_color_line" in
     *'[33m'*) : ;;
     *) fail "the hull was not rendered with standard ANSI yellow" ;;
   esac
   case "$boat_sail_line" in
-    *'[33m'*'[31m'*) : ;;
-    *) fail "the asymmetric sail did not render yellow before standard ANSI red" ;;
+    *'[33m'*'◿│◣'*) : ;;
+    *) fail "the sail was not rendered as one standard ANSI yellow run" ;;
+  esac
+  case "$boat_color_line" in
+    *'[33m'*'╲▁▁▁╱'*) : ;;
+    *) fail "the hull was not rendered as one standard ANSI yellow run" ;;
   esac
   case "$boat_color_line$boat_sail_line" in
     *'[38;2;'*|*'[38;5;'*|*'[9'[0-9]'m'*) fail "the working ship used a non-standard color escape" ;;

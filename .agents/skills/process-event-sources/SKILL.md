@@ -27,14 +27,17 @@ Firstmate registers a source, keeps working, and is woken when that process comp
 ## Arming a source
 
 Use the adapter, not the generic runner, for a real source.
-For a Lavish review artifact firstmate owns (a live investigating scout should host its own loop):
+For a Lavish review artifact firstmate owns:
 
 ```sh
 bin/fm-procevent-lavish.sh arm <artifact.html>
 ```
 
+Never arm a board that a live task hosts; follow the crew-hosted Lavish board contract in [`docs/configuration.md`](../../../docs/configuration.md#crew-hosted-lavish-review-boards).
+
 For a wake when an expected file appears - a dated daily report, a produced artifact - arm `bin/fm-procevent-file.sh`, whose header owns its template, cursor, and recurrence contract.
 It is recurring by design: one arm keeps serving later days, so retire it when the wait itself is over rather than re-arming it per file.
+
 Registering a source is not the same fact as listening to it: arming records the source, and a separate runner still has to pick it up.
 After arming by hand, confirm `bin/fm-procevent.sh list` reports that source as `live`, and run `bin/fm-procevent.sh reconcile` when it does not.
 Reconcile reports every launch that did not prove it took its claim within the confirm window as `failed=` and exits non-zero, so a source that cannot be started says so instead of looking armed, and it wakes you once per failure episode about it because the watcher discards that count; `start` does not fix that - if the source stays unowned, run `start` attached to read the runner's refusal, then check the source command and adapter binary the registration names, and if a later reconcile finds the source owned the episode closes on its own.
@@ -107,11 +110,12 @@ Two rules the commands cannot enforce for you:
   ```
   This call is atomically deduplicated by the exact source and sequence: it prints `handled: <id> <seq>` only the first time and `already-handled: <id> <seq>` on every repeat, so a paired effect gated on that distinction is never authorized twice. Reading the event line or the result file is not handling - only this call durably retires the wake, so call it every time, including on a repeat wake for a sequence you already acted on.
 : Ask the adapter what the result means rather than parsing it yourself.
-  `bin/fm-procevent.sh classify <result-file>` routes through the immutable built-in or extension identity captured with that result; for Lavish, its existing direct command returns `feedback`, `ended`, `waiting`, `missing`, or `unknown`.
-  Consume a Lavish capture with `bin/fm-procevent-lavish.sh read <result-file>` rather than grepping the raw file: that command reports declared and presented item counts plus a completeness verdict, enumerates every captured queued item while retaining supplied element identity, and surfaces a `tag=message` session-ending message as its own field.
+  `bin/fm-procevent.sh classify <result-file>` routes through the immutable built-in or extension identity captured with that result; for Lavish, its existing direct command returns `feedback`, `ended`, `waiting`, `disconnected`, `missing`, or `unknown`.
+  Consume a Lavish capture with `bin/fm-procevent-lavish.sh read <result-file>` rather than grepping the raw file: that command reports declared and presented item counts plus a completeness verdict, enumerates every captured queued item while retaining supplied element identity, and surfaces a `tag=message` freeform message as its own field, labeling it as session-ending only when the session ended.
   `answers` remains the keyed-choice extractor and never treats freeform prose as a decision key.
   A `feedback` result can still be the last one a review ever produces, so never assume another wake is coming just because the state is not `ended`.
-: A routine no-op an adapter positively identifies never becomes a wake at all - it is recorded as handled and stays silent, so you never see it. For Lavish that is exactly an ended session carrying nothing: a board the captain closed without saying anything. A board close carrying a real answer, and every other result, still wakes you unchanged. Never read the absence of a wake as proof a review is still open; ask the source, not the queue.
+The crew-hosted recovery ordering and interim polling rule are owned by the [crew-hosted Lavish board contract](../../../docs/configuration.md#crew-hosted-lavish-review-boards); `bin/fm-brief.sh` emits its interim instruction at the point of use.
+: A routine no-op an adapter positively identifies never becomes a wake at all - it is recorded as handled and stays silent, so you never see it. For Lavish that is an ended session carrying nothing, or `browser_disconnected` (classified `disconnected`): a closed review window that still has an open session. A board close carrying a real answer, and every other result, still wakes you unchanged. Never read the absence of a wake as proof a review is still open; ask the source, not the queue.
 : A Lavish wake whose source id matches `bin/fm-procevent-lavish.sh source-id "$(bin/fm-bearings-board.sh path)"` is a bearings board result; load the `bearings` skill's board-wake handling regardless of which answer kinds the result contains.
 : A `when` wake carries the watch's one terminal captured outcome and may be re-announced until handled: `bin/fm-procevent-when.sh classify <result-file>` returns `fired` (relay the success and its output); `action-failed` (relay the captured error and decide recovery); `condition-error`, `never-true`, or `rejected` (the watch stopped safely without acting - report why and decide whether to re-arm); or `ambiguous` (the action was claimed but its outcome was never captured - verify its effect manually before anything else). Every `when` outcome is terminal and the action is never retried automatically, so after handling and the generic acknowledgement above, run `bin/fm-procevent-when.sh retire <name>` to clean the watch's private records before any re-arm.
 : For a file source, `bin/fm-procevent-file.sh classify <result-file>` returns `appeared` or `unknown`.
