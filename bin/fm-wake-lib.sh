@@ -1027,6 +1027,9 @@ fm_lock_try_acquire() {
   return "$rc"
 }
 
+# Blocks through contention and stale-owner recovery. Returns non-zero only
+# when the lock's parent directory is gone (fm_lock_parent_present): the state
+# this lock guards no longer exists, so the caller must stop, not retry.
 fm_lock_acquire_wait() {
   local lockdir=$1
   while ! fm_lock_try_acquire "$lockdir"; do
