@@ -912,6 +912,20 @@ fm_recovery_marker_reopen_announced() {
   fm_recovery_transition "$1" reopen-announced
 }
 
+# A lock is created inside the directory it guards. Once that directory is gone
+# - a home deleted under a still-running worker - no attempt can ever succeed,
+# so it is a permanent failure, not contention. Without this check every attempt
+# recursed through <lock>.steal.steal... until the path overflowed, and
+# fm_lock_acquire_wait repeated that forever from an orphaned worker.
+fm_lock_parent_present() {  # <lockdir>
+  local parent
+  case "$1" in
+    */*) parent=${1%/*}; [ -n "$parent" ] || parent=/ ;;
+    *) parent=. ;;
+  esac
+  [ -d "$parent" ]
+}
+
 fm_lock_try_acquire() {
   local lockdir=$1 pid steal cur rc steal_owner primary_owner current
   FM_LOCK_HELD_PID=
@@ -921,6 +935,7 @@ fm_lock_try_acquire() {
   if fm_lock_try_create "$lockdir"; then
     return 0
   fi
+  fm_lock_parent_present "$lockdir" || return 1
 
   fm_current_pid current || return 1
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
@@ -1015,6 +1030,7 @@ fm_lock_try_acquire() {
 fm_lock_acquire_wait() {
   local lockdir=$1
   while ! fm_lock_try_acquire "$lockdir"; do
+    fm_lock_parent_present "$lockdir" || return 1
     sleep 0.1
   done
 }

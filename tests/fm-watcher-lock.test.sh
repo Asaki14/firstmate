@@ -480,6 +480,37 @@ test_lock_paused_mid_acquire_claim_fails_during_steal() {
   pass "paused mid-acquire claimant backs off to active stealer"
 }
 
+# A home deleted under a detached worker leaves its locks nowhere to live. The
+# wait must give up instead of retrying forever, and an attempt must not recurse
+# through <lock>.steal.steal... chasing a lock that can never be created.
+test_lock_wait_gives_up_when_state_dir_vanishes() {
+  local dir state waiter i rc
+  dir=$(make_case lock-vanished-state)
+  state="$dir/state"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    rm -rf "$2"
+    fm_lock_acquire_wait "$2/.contend.lock"
+  ' _ "$LIB" "$state" 2> "$dir/waiter.err" &
+  waiter=$!
+  i=0
+  while [ "$i" -lt 50 ] && kill -0 "$waiter" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if kill -0 "$waiter" 2>/dev/null; then
+    pkill -P "$waiter" 2>/dev/null || true
+    kill "$waiter" 2>/dev/null || true
+    wait "$waiter" 2>/dev/null || true
+    fail "lock wait kept retrying after its state directory was deleted"
+  fi
+  rc=0
+  wait "$waiter" || rc=$?
+  [ "$rc" -ne 0 ] || fail "lock wait reported success for a lock whose directory is gone"
+  [ ! -s "$dir/waiter.err" ] || fail "lock attempt recursed through steal locks: $(head -c 200 "$dir/waiter.err")"
+  pass "lock wait gives up once its state directory is deleted"
+}
+
 test_watch_restart_rejects_reused_pid() {
   local dir state fakebin out live pid i
   dir=$(make_case restart-reused-pid)
@@ -1179,6 +1210,7 @@ test_lock_does_not_steal_live_lock
 test_lock_empty_pid_uses_minimum_grace
 test_lock_late_claim_loses_after_recreate
 test_lock_paused_mid_acquire_claim_fails_during_steal
+test_lock_wait_gives_up_when_state_dir_vanishes
 test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
