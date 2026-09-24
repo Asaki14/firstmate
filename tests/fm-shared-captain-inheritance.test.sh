@@ -382,6 +382,10 @@ EOF
 
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
     "$ROOT/bin/fm-session-start.sh")
+  # Session start detaches the startup-network worker into this fixture home;
+  # let it publish before the fixture is deleted under it.
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-startup-network.sh" wait 60 >/dev/null \
+    || fail "session start's detached startup-network worker did not publish"
 
   assert_contains "$out" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)" \
     "session-start digest should label the shared captain file unmistakably"
