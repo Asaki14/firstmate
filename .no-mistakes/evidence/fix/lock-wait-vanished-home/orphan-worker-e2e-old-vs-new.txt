@@ -1,0 +1,19 @@
+### OLD code (base e2ca7d3): lock lib + worker from before the fix
+[old] starting worker: fm-startup-network.sh run --locked 0 (FM_HOME=/var/folders/99/968y42z16x3_c2frf56yl4p00000gp/T//fm-orphan-old.VwuSTC/home)
+[old] status while running: state=running pid=30840 started=1790251633 locked=0 phases=probe generation=1790251633.30840.manual lock_pid= 
+[old] deleting fixture home while worker (pid 30840) still runs
+[old] RESULT: worker pid 30840 STILL ALIVE 13000ms after home deletion (%cpu=16.9)
+[old] pid counter advanced by 0 in 2s -> ~0 forks/s from the spinning orphan
+[old] deepest steal path attempted: 5999 chars
+[old] stderr sample: basename: /var/folders/99/968y42z16x3_c2frf56yl4p00000gp/T//fm-orphan-old.VwuSTC/home/state/.startup-network.lock.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.steal.
+[old] leftover temp files: 6
+exit=1
+
+### NEW code (target 7cf6552)
+[new] starting worker: fm-startup-network.sh run --locked 0 (FM_HOME=/var/folders/99/968y42z16x3_c2frf56yl4p00000gp/T//fm-orphan-new.E0KIUf/home)
+[new] status while running: state=running pid=41351 started=1790251655 locked=0 phases=probe generation=1790251655.41351.manual lock_pid= 
+[new] deleting fixture home while worker (pid 41351) still runs
+[new] RESULT: worker pid 41351 EXITED rc=0 within 1500ms of home deletion
+[new] stderr bytes: 0 (no steal recursion noise)
+[new] leftover temp files: 6
+exit=0

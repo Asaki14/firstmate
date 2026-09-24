@@ -1,0 +1,7 @@
+=== NEW lib (target 7cf6552) ===
+ok - lock wait gives up once its state directory is deleted
+rc=0
+
+=== OLD lib (base e2ca7d3) ===
+not ok - lock wait kept retrying after its state directory was deleted
+rc=1
