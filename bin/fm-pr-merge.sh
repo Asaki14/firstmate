@@ -4,7 +4,9 @@
 # The full canonical URL is parsed by bin/fm-pr-lib.sh. A GitHub pull request is
 # addressed through gh by the derived owner and repository; a GitLab merge
 # request is addressed through glab by the project URL rebuilt from the parsed
-# host and path, so any instance works and no host is hardcoded.
+# host and path, so any instance works and no host is hardcoded. A Gerrit change
+# is refused outright: that adapter is read-only, and the refusal at the parse
+# below owns why.
 #
 # Merge method on GitHub defaults to --squash when the caller passes none of
 # --squash, --merge, --rebase, or --method after the optional -- separator.
@@ -146,6 +148,17 @@ PR_NUMBER=$FM_PR_NUMBER
 # glab resolves the instance from the project URL passed to -R, so the host is
 # rebuilt from the parsed identity rather than read from any ambient default.
 PROJECT_URL="https://$FM_PR_HOST/$FM_PR_PATH"
+# Firstmate never submits a Gerrit change, even though gerrit-axi can, so the
+# refusal is stated rather than left as a silently absent provider branch.
+# Submitting a Gerrit change means first recording a Code-Review+2, which is a
+# positive attributed claim that a named human approved the change, read by
+# colleagues and by any audit of the repository. Firstmate must not manufacture
+# one. The server permitting self-approval is what makes this a policy boundary
+# rather than a capability limit, so it is enforced here rather than assumed.
+if [ "$PROVIDER" = gerrit ]; then
+  echo "error: firstmate does not submit a Gerrit change: submitting requires an attributed human approval it must not manufacture, so a human submits the change on the server" >&2
+  exit 2
+fi
 shift 2
 ATTENDED_OVERRIDE=false
 ALLOW_RED=()
@@ -584,7 +597,6 @@ github_verify_mergeable() {
   if ! fields=$(printf '%s' "$json" | jq -r '
       if type == "object" then
         "state=" + ((.state // "") | tostring),
-        "draft=" + (if (.isDraft | type) == "boolean" then (.isDraft | tostring) else "" end),
         "mergeable=" + ((.mergeable // "") | tostring),
         "merge_state=" + ((.mergeStateStatus // "") | tostring),
         "head=" + ((.headRefOid // "") | tostring),
@@ -599,7 +611,6 @@ github_verify_mergeable() {
     total=$((total + 1))
     case "$line" in
       state=*) state=${line#state=} ;;
-      draft=*) draft=${line#draft=} ;;
       mergeable=*) mergeable=${line#mergeable=} ;;
       merge_state=*) merge_state=${line#merge_state=} ;;
       head=*) live_head=${line#head=} ;;
@@ -610,11 +621,12 @@ github_verify_mergeable() {
   done <<FIELDS
 $fields
 FIELDS
-  if [ "$named" -ne 6 ] || [ "$total" -ne 6 ] || [ -z "$base" ]; then
+  if [ "$named" -ne 5 ] || [ "$total" -ne 5 ] || [ -z "$base" ]; then
     echo "error: could not read the GitHub pull request state before merging" >&2
     return 1
   fi
 
+  draft=$(fm_pr_json_draft_state "$json")
   if ! fm_pr_head_valid "$live_head"; then
     echo "error: could not read the GitHub pull request head commit before merging" >&2
     return 1
@@ -864,7 +876,7 @@ METHODS
 }
 
 record_pr_metadata() {
-  if ! "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"; then
+  if ! FM_PR_CHECK_MERGE=1 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"; then
     return 1
   fi
   grep -qxF "pr=$URL" "$META" || {
