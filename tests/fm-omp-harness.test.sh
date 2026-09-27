@@ -29,6 +29,9 @@
 #      stands down when the payload already carries stop_hook_active.
 #   7. The watch extension arms through fm_watch_arm_omp and delivers an
 #      actionable close as one follow-up.
+#   8. A task subagent's instance of either primary extension (ctx.hasUI false)
+#      never re-arms, stops, or displaces the primary's watcher or session-start
+#      delivery.
 set -u
 
 # shellcheck source=tests/fixtures.sh
@@ -789,6 +792,92 @@ EOF
   pass ".omp watch extension: a host close split across stream chunks reaches main as one whole follow-up"
 }
 
+# omp rebinds the already-imported factories to every task subagent in the same
+# process. The subagent's instance must leave the primary's arm child, its live
+# generation, and its session-start delivery untouched from bind to release.
+test_subagent_instances_leave_primary_supervision_alone() {
+  local repo home log out status
+  repo="$TMP_ROOT/subagent/repo"; home="$TMP_ROOT/subagent/home"; log="$TMP_ROOT/subagent/arm.log"
+  install_omp_extension_fixture "$repo"
+  mkdir -p "$home/state"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'start=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+trap 'printf "term=%s\n" "$$" >> "$FM_ARM_LOG"; kill "$sleeper" 2>/dev/null; exit 143' TERM
+printf 'watcher: started pid=%s (beacon 0s) recovery-generation=gen-%s\n' "$$" "$$"
+sleep 30 &
+sleeper=$!
+wait "$sleeper"
+SH
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/bin/fm-cd-pretool-check.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/bin/fm-arm-pretool-check.sh"
+  # shellcheck disable=SC2016 # $2 expands in the generated script
+  printf '#!/usr/bin/env bash\nprintf "digest=%%s\\n" "$2" >> "$FM_ARM_LOG"\nprintf "OMP DIGEST source=%%s\\n" "$2"\n' > "$repo/bin/fm-sessionstart-run.sh"
+  chmod +x "$repo/bin/"*.sh
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_OMP_ARM_READY_TIMEOUT_MS=3000 \
+    WATCH="$repo/.omp/extensions/fm-primary-omp-watch.ts" GUARD="$repo/.omp/extensions/fm-primary-turnend-guard.ts" \
+    node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+import { writeFileSync, readFileSync } from "node:fs";
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const watch = await import(pathToFileURL(process.env.WATCH).href);
+const guard = await import(pathToFileURL(process.env.GUARD).href);
+// Both extensions bind to one fake API per session, as omp binds them to one runner.
+function bind() {
+  const handlers = new Map(); const api = { tool: null };
+  const pi = {
+    on(e, h) { handlers.set(e, [...(handlers.get(e) ?? []), h]); },
+    registerCommand() {},
+    registerTool(t) { api.tool = t; },
+    sendUserMessage() { return undefined; },
+    sendMessage() {},
+  };
+  watch.default(pi);
+  guard.default(pi);
+  api.emit = async (name, event, ctx) => {
+    let result;
+    for (const h of handlers.get(name) ?? []) result = (await h(event, ctx)) ?? result;
+    return result;
+  };
+  return api;
+}
+const armRows = () => { try { return readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n"); } catch { return []; } };
+const text = async (api) => (await api.tool.execute()).content[0].text;
+const primaryCtx = { hasUI: true, sessionManager: { getSessionId: () => "main" } };
+const subagentCtx = { hasUI: false, sessionManager: { getSessionId: () => "sub" } };
+
+const primary = bind();
+await primary.emit("session_start", { type: "session_start" }, primaryCtx);
+for (let i = 0; i < 30 && !armRows().some((r) => r.startsWith("start=")); i += 1) await new Promise((r) => setTimeout(r, 100));
+
+const subagent = bind();
+await subagent.emit("session_start", { type: "session_start" }, subagentCtx);
+const subagentDigest = await subagent.emit("before_agent_start", { type: "before_agent_start", prompt: "task" }, subagentCtx);
+const subagentArm = await text(subagent);
+await subagent.emit("session_shutdown", {}, subagentCtx);
+await new Promise((r) => setTimeout(r, 300));
+
+const primaryArm = await text(primary);
+const primaryDigest = await primary.emit("before_agent_start", { type: "before_agent_start", prompt: "hi" }, primaryCtx);
+const rows = armRows();
+if (rows.filter((r) => r.startsWith("start=")).length !== 1) throw new Error(`the subagent restarted the arm: ${rows.join(" | ")}`);
+if (rows.some((r) => r.startsWith("term="))) throw new Error(`the subagent's release stopped the primary's arm: ${rows.join(" | ")}`);
+if (!subagentArm.startsWith("watcher: ignored - not the primary session")) throw new Error(`the subagent's tool did not refuse: ${subagentArm}`);
+if (!primaryArm.startsWith("watcher: unchanged - omp extension already owns an arm child")) throw new Error(`the primary lost its live generation: ${primaryArm}`);
+if (subagentDigest !== undefined) throw new Error(`the subagent received the session-start digest: ${JSON.stringify(subagentDigest)}`);
+if (!primaryDigest?.message?.content?.includes("OMP DIGEST source=startup")) throw new Error(`the primary lost its session-start digest: ${JSON.stringify(primaryDigest)}`);
+if (rows.filter((r) => r.startsWith("digest=")).length !== 1) throw new Error(`session start ran for the subagent: ${rows.join(" | ")}`);
+await primary.emit("session_shutdown", {}, primaryCtx);
+if (!armRows().some((r) => r.startsWith("term="))) throw new Error("the primary's own shutdown must still stop its arm");
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "omp subagent instances: $out"
+  [ -z "$out" ] || fail "omp subagent instance test printed output: $out"
+  pass ".omp extensions: a task subagent's instance neither re-arms, stops, nor displaces the primary's supervision or digest"
+}
+
 test_detection_anchored_name_and_marker_precedence
 test_lock_identity_and_liveness_classification
 test_spawn_launch_line_and_worker_wiring
@@ -803,3 +892,4 @@ test_watch_extension_arms_and_delivers
 test_watch_extension_runs_the_supervision_host
 test_watch_extension_replays_a_host_only_boundary_across_replacement
 test_watch_extension_delivers_a_split_host_close_whole
+test_subagent_instances_leave_primary_supervision_alone

@@ -27,4 +27,4 @@ The Pi supervision branch (`docs/pi-supervision-branch.md`) is Pi's in-process c
 
 The turn-end guard extension lives at `__FM_OMP_TURNEND_EXT__`.
 The watcher extension lives at `__FM_OMP_EXT__`.
-Both are tracked, project-local `.omp/extensions/*.ts` files that omp auto-discovers from this home with no trust dialog; `bin/fm-session-start.sh` reports when the running omp session has not loaded both required extensions.
+Both are tracked, project-local `.omp/extensions/*.ts` files that omp auto-discovers from this home with no trust dialog, and a `task` subagent's copy of them never arms, stops, or displaces this session's supervision; `bin/fm-session-start.sh` reports when the running omp session has not loaded both required extensions.

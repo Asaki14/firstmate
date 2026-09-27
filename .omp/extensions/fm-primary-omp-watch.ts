@@ -45,6 +45,18 @@
 // handoff carries actionable closes that were still pending delivery; its
 // durable state lives at state/extensions/omp-primary-watch/session-replacement-actionable.json.
 // Stale callbacks from a prior generation are no-ops against the active replacement.
+// A task subagent is never a session this extension owns: omp rebinds this
+// already-imported factory to every task subagent in the same process, so the
+// module state below is shared with it. omp exposes no documented subagent
+// marker to extensions (its session kind is private); the structural signal is
+// ctx.hasUI, which omp documents false for print, headless, and subagent
+// runners and which a supervising primary (tui or rpc) never reads false
+// (verified, omp 18.2.10). An instance whose session_start sees it false stays
+// inert for its life: it never activates, arms, or stops a generation, and its
+// tool and command answer that they are ignored. Because a factory runs before
+// its first event can reveal a subagent, a factory bind activates its
+// generation only when no other instance's generation is live; the owning
+// session_start still activates unconditionally, so replacement is unchanged.
 //
 // Delivery versus consumption (stated once here):
 // A main follow-up is delivered once omp accepts it (sendUserMessage returns).
@@ -159,6 +171,11 @@ const hostReadyTimeoutMs = Math.max(armReadyTimeoutMs, 30000);
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
 const repairOnlyHint = "call fm_watch_arm_omp again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - omp session is shutting down";
+const subagentMessage = "watcher: ignored - not the primary session; the primary omp session owns watcher supervision";
+
+function isSubagentContext(ctx: unknown): boolean {
+  return (ctx as { hasUI?: unknown } | undefined)?.hasUI === false;
+}
 
 let nextGenerationId = 0;
 let nextHandoffId = 0;
@@ -537,7 +554,8 @@ process.once("exit", cleanupOnProcessExit);
 
 export default function (pi: ExtensionAPI) {
   let generation = createGeneration();
-  activateGeneration(generation);
+  if (!activeGeneration || activeGeneration.stopping) activateGeneration(generation);
+  let subagentSession = false;
 
   async function sendWake(
     owner: SessionGeneration,
@@ -1086,7 +1104,11 @@ export default function (pi: ExtensionAPI) {
     consumeWake(generation, userMessageText(message.content));
   });
 
-  pi.on?.("session_start", async () => {
+  pi.on?.("session_start", async (_event, ctx) => {
+    if (subagentSession || isSubagentContext(ctx)) {
+      subagentSession = true;
+      return;
+    }
     if (generation.stopping) generation = createGeneration();
     activateGeneration(generation);
     markLoaded();
@@ -1094,6 +1116,7 @@ export default function (pi: ExtensionAPI) {
     activateOwnedWatch(generation);
   });
   pi.on?.("session_shutdown", async () => {
+    if (subagentSession) return;
     // omp carries no shutdown reason (verified: `reason` is undefined), so the
     // replacement handoff is always persisted when anything is pending; a
     // terminal quit then merely replays an already-drained wake next start.
@@ -1104,7 +1127,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand?.("fm-watch-arm-omp", {
     description: "Arm firstmate watcher supervision through the omp extension instead of foreground bash.",
     handler: async (_args, ctx) => {
-      const result = activateOwnedWatch(generation);
+      const result = subagentSession ? { ok: false, message: subagentMessage } : activateOwnedWatch(generation);
       ctx?.ui?.notify?.(result.message, result.ok ? "info" : "warning");
     },
   });
@@ -1119,7 +1142,7 @@ export default function (pi: ExtensionAPI) {
     ],
     parameters: Type.Object({}),
     execute: async () => {
-      const result = activateOwnedWatch(generation);
+      const result = subagentSession ? { ok: false, message: subagentMessage } : activateOwnedWatch(generation);
       return {
         content: [{ type: "text", text: result.message }],
         details: result,

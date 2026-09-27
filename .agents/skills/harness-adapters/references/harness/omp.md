@@ -42,6 +42,7 @@ The captain's own `~/.omp/agent/config.yml` is never written; the tracked `.omp/
 ## Extension loading
 
 omp auto-discovers `<cwd>/.omp/extensions/*.ts` (top level only, cwd only, no ancestor walk, no trust dialog) and the active profile's `agent/extensions/`; `.pi/extensions/` is not a discovery root.
+omp also rebinds those already-loaded extensions to every in-process `task` subagent, and the two tracked primary extensions stay inert there because a subagent runner reads `ctx.hasUI` false (`.omp/extensions/fm-primary-omp-watch.ts` owns that rule).
 A file that is both auto-discovered and named with `-e` loads twice, so the per-task worker extension lives in `state/` and a secondmate launch names no `-e` at all.
 There is no `agent_settled` event; `agent_end` plus `willContinue` replaces it.
 
