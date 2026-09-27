@@ -26,6 +26,11 @@
 // before_agent_start returning { message } was verified to reach model context
 // on omp 18.1.11 (the model quoted an injected marker back), so omp qualifies
 // for the Run tier.
+// A task subagent in this process gets its own instance of this factory; it
+// never owns session-start delivery, detected by ctx.hasUI false as the owner
+// of that rule states (.omp/extensions/fm-primary-omp-watch.ts), so its
+// session_start and session_compact never retire the primary's delivery or
+// rerun session start. Its bash seatbelts stay active.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -538,6 +543,7 @@ export default function (pi: ExtensionAPI) {
   registerSessionstartExitListener();
 
   pi.on?.("session_start", (_event, ctx) => {
+    if ((ctx as { hasUI?: unknown } | undefined)?.hasUI === false) return;
     sessionStarts += 1;
     const source: SessionstartSource = sessionStarts === 1
       ? (launchResumeSource() ?? "startup")
@@ -558,6 +564,7 @@ export default function (pi: ExtensionAPI) {
   // is idle and auto-compaction may retry without another before_agent_start,
   // so the message is sent directly while sharing generation ownership.
   pi.on?.("session_compact", async (_event, ctx) => {
+    if ((ctx as { hasUI?: unknown } | undefined)?.hasUI === false) return;
     registerSessionstartExitListener();
     const generation = createSessionstartGeneration("compact", sessionIdFromContext(ctx));
     sessionstartGeneration = generation;
