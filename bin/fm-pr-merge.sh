@@ -60,8 +60,14 @@
 # live at merge time rather than taken from recorded metadata: the merge request
 # is open, detailed_merge_status is mergeable, has_conflicts is false,
 # blocking_discussions_resolved is true, and the head pipeline succeeded at the
-# exact current head commit. Every failing condition is reported, not just the
-# first. The verified head is then passed to glab as --sha, so a push that lands
+# exact current head commit. The one pipeline exception is a merge request with
+# no head pipeline at all on a project whose only_allow_merge_if_pipeline_succeeds
+# is false, read live from the project: such a project has no pipeline for this
+# merge request and does not require one, so that fact is reported and the other
+# conditions still decide. A present pipeline that did not succeed, or a project
+# that requires one or whose requirement cannot be read, still refuses.
+# Every failing condition is reported, not just the first.
+# The verified head is then passed to glab as --sha, so a push that lands
 # between that read and the merge fails the merge instead of landing commits
 # nothing verified. A recorded pr_head that disagrees with the live head is
 # reported rather than trusted, because a rebase moves the head and leaves the
@@ -408,7 +414,8 @@ gitlab_verify_mergeable() {
   local json fields line
   local total=0 named=0 refusals=''
   local state='' detail='' conflicts='' discussions=''
-  local live_head='' pipeline_sha='' pipeline_status='' async_configured=''
+  local live_head='' pipeline_sha='' pipeline_status='' pipeline_present='' async_configured=''
+  local project_json='' pipeline_required='' no_pipeline_required=false
 
   # GITLAB_HOST is set to the same host the project URL already carries, so the
   # instance is taken from the parsed URL by both signals and never from the
@@ -431,6 +438,7 @@ gitlab_verify_mergeable() {
         "head=" + ((.sha // "") | tostring),
         "pipeline_sha=" + ((.head_pipeline.sha // "") | tostring),
         "pipeline_status=" + ((.head_pipeline.status // "") | tostring),
+        "pipeline_present=" + (if .head_pipeline == null then "false" else "true" end),
         "async_configured=" + (if .merge_when_pipeline_succeeds == true or (.merge_after != null) then "true" else "false" end)
       else
         error("merge request payload is not an object")
@@ -448,6 +456,7 @@ gitlab_verify_mergeable() {
       head=*) live_head=${line#head=} ;;
       pipeline_sha=*) pipeline_sha=${line#pipeline_sha=} ;;
       pipeline_status=*) pipeline_status=${line#pipeline_status=} ;;
+      pipeline_present=*) pipeline_present=${line#pipeline_present=} ;;
       async_configured=*) async_configured=${line#async_configured=} ;;
       *) continue ;;
     esac
@@ -458,7 +467,7 @@ FIELDS
   # Every field named exactly once and no unnamed line: a value carrying a
   # newline would split into a line no name matches, so it is refused here
   # rather than silently truncated into a value a check could accept.
-  if [ "$named" -ne 8 ] || [ "$total" -ne 8 ]; then
+  if [ "$named" -ne 9 ] || [ "$total" -ne 9 ]; then
     echo "error: could not read the GitLab merge request state before merging" >&2
     return 1
   fi
@@ -486,20 +495,46 @@ FIELDS
   [ "$discussions" = true ] \
     || refusals="$refusals  - blocking_discussions_resolved is \"${discussions:-unreadable}\", not true
 "
-  [ "$pipeline_status" = success ] \
-    || refusals="$refusals  - the head pipeline status is \"${pipeline_status:-none}\", not success
+  # Only an absent head pipeline asks whether the project requires one; the
+  # project path is limited to [A-Za-z0-9._/-] by fm-pr-lib.sh, so encoding "/"
+  # alone yields the project id the API expects.
+  if [ "$pipeline_present" = false ]; then
+    if project_json=$(GITLAB_HOST="$FM_PR_HOST" glab api "projects/${FM_PR_PATH//\//%2F}" \
+        --hostname "$FM_PR_HOST" 2>/dev/null) \
+      && pipeline_required=$(printf '%s' "$project_json" | jq -r '
+        if type == "object" and (.only_allow_merge_if_pipeline_succeeds | type) == "boolean" then
+          .only_allow_merge_if_pipeline_succeeds | tostring
+        else
+          error("project payload has no pipeline requirement")
+        end' 2>/dev/null) \
+      && [ "$pipeline_required" = false ]; then
+      no_pipeline_required=true
+    elif [ -z "$pipeline_required" ]; then
+      refusals="$refusals  - the project's pipeline requirement could not be read
 "
-  [ "$pipeline_sha" = "$live_head" ] \
-    || refusals="$refusals  - the head pipeline ran at \"${pipeline_sha:-none}\", not at the current head $live_head
+    fi
+  fi
+  if [ "$no_pipeline_required" = false ]; then
+    [ "$pipeline_status" = success ] \
+      || refusals="$refusals  - the head pipeline status is \"${pipeline_status:-none}\", not success
 "
+    [ "$pipeline_sha" = "$live_head" ] \
+      || refusals="$refusals  - the head pipeline ran at \"${pipeline_sha:-none}\", not at the current head $live_head
+"
+  fi
 
   if [ -n "$refusals" ]; then
     printf 'error: refusing to merge %s\n' "$URL" >&2
     printf '%s' "$refusals" >&2
     return 1
   fi
-  printf 'verified: %s is open and mergeable, with a successful pipeline at head %s\n' \
-    "$URL" "$live_head" >&2
+  if [ "$no_pipeline_required" = true ]; then
+    printf 'verified: %s is open and mergeable at head %s; the project has no pipeline for this merge request and does not require one\n' \
+      "$URL" "$live_head" >&2
+  else
+    printf 'verified: %s is open and mergeable, with a successful pipeline at head %s\n' \
+      "$URL" "$live_head" >&2
+  fi
   FM_PR_MERGE_HEAD=$live_head
   FM_PR_GITLAB_ASYNC_CONFIGURED=$async_configured
 }

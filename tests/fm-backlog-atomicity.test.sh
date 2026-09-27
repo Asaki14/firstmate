@@ -2050,6 +2050,30 @@ test_recovery_backfills_a_recorded_link_on_an_already_done_item() {
   pass "recovery backfills recorded links onto already Done items"
 }
 
+# tasks-axi links only GitHub and Forgejo pull requests, so a recorded GitLab
+# merge request URL must still land the close, keeping the link in the body.
+test_recovery_keeps_a_rejected_merge_request_link_as_a_note() {
+  local case_dir id marker out url
+  id=atomic-heal-gitlab-b9
+  url=https://gitlab.example/group/project/-/merge_requests/41
+  case_dir=$(make_home heal-gitlab-link)
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-heal-gitlab\narg=--pr\narg=%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$url" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  [ "$(row_state "$case_dir" "$id")" = "done" ] \
+    || fail "a recorded merge request link kept the close from landing: $out"
+  assert_contains "$(tasks-axi show "$id" --full --file "$(backlog_of "$case_dir")")" "body: \"PR $url\"" \
+    "the replayed close dropped the merge request link instead of keeping it in the body"
+  assert_absent "$marker" "a close that landed with its link as a note left its record behind"
+  assert_not_contains "$out" "BACKLOG_RECONCILE" \
+    "session start still reported the landed close as unreconciled"
+  pass "recovery lands a close whose merge request link tasks-axi rejects, keeping the link as a note"
+}
+
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read() {
   local case_dir id out
   id=atomic-heal-read-error-b10
@@ -3055,6 +3079,7 @@ test_recovery_rejects_an_internal_worker_record_symlink
 test_recovery_ignores_a_symlinked_worker_record
 test_recovery_replays_a_close_an_interrupted_cleanup_left_open
 test_recovery_backfills_a_recorded_link_on_an_already_done_item
+test_recovery_keeps_a_rejected_merge_request_link_as_a_note
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning
 test_recovery_finishes_a_close_for_the_same_meta_incarnation
