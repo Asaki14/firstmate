@@ -813,11 +813,22 @@ fm_backlog_dispatch_rollback() {
   return 0
 }
 
+# tasks-axi links only GitHub and Forgejo pull-request URLs, so a recorded
+# GitLab merge request URL is rejected as a PR link. That one rejection lands the
+# same close with the URL kept as a body note instead; every other failure stays
+# a failure, and a re-run note is not duplicated.
 fm_backlog_close_transition() {
   local meta=$1 marker=$2 data=$3 id=$4 state=$5
   shift 5
   [ -z "$meta" ] || fm_backlog_record_remove "$meta" "task record" "$state" || return 1
-  fm_backlog_done "$data" "$id" "$@" || return 1
+  if ! fm_backlog_done "$data" "$id" "$@"; then
+    [ "$#" -eq 2 ] && [ "$1" = --pr ] || return 1
+    case "$FM_BACKLOG_TRANSITION_ERROR" in
+      *"pr link must be a canonical pull request URL"*) ;;
+      *) return 1 ;;
+    esac
+    fm_backlog_done "$data" "$id" --note "PR $2" || return 1
+  fi
   fm_backlog_record_remove "$marker" "pending-close record" "$state"
 }
 

@@ -236,8 +236,10 @@ $ echo $?
 1
 ```
 
-A project that runs no pipeline at all therefore cannot merge through this path.
-That is the intended reading of the requirement rather than an oversight: a successful pipeline at the head is a condition, and "there is no pipeline" does not satisfy it.
+These transcripts predate the no-pipeline exception and are kept as the record of the refusal shape.
+When `head_pipeline` is `null`, `bin/fm-pr-merge.sh` now reads the project's `only_allow_merge_if_pipeline_succeeds` live: `false` means the project has no pipeline for this merge request and does not require one, so the pipeline conditions are skipped, the verified line says so, and the other conditions still decide.
+A project that requires a successful pipeline, or whose requirement cannot be read, still refuses exactly as shown, and a pipeline that exists but did not succeed refuses either way.
+`tests/fm-pr-merge.test.sh` covers both cases against fixtures.
 
 Both refusals came after `pr=` was recorded and the merge poll was armed, as a failed live verification or `gh pr merge` does on the GitHub side, so a refusal still leaves the audit trail and the watch in place.
 

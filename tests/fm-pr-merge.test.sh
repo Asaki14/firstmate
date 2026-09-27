@@ -288,6 +288,10 @@ case "${1:-} ${2:-}" in
     : > "$case_dir/glab-merge-called"
     exit 0
     ;;
+  "api projects/"*)
+    cat "$case_dir/project.json"
+    exit 0
+    ;;
 esac
 exit 0
 SH
@@ -346,6 +350,8 @@ make_gitlab_case() {
   : > "$case_dir/glab.log"
   write_mr_json "$case_dir/mr.json" "$@"
   write_mr_json "$case_dir/mr-post.json" state=merged
+  # A project that requires a successful pipeline unless a case says otherwise.
+  printf '{"only_allow_merge_if_pipeline_succeeds":true}\n' > "$case_dir/project.json"
   printf '%s\n' "$case_dir"
 }
 
@@ -1704,6 +1710,52 @@ test_gitlab_reports_every_failing_condition() {
   pass "fm-pr-merge reports every failing GitLab condition, not only the first"
 }
 
+# A project with no pipeline for this merge request that does not require one
+# merges on its other conditions, while a pipeline that exists but did not
+# succeed still refuses on that same project.
+test_gitlab_no_pipeline_not_required_merges() {
+  local case_dir rc merge_line
+  case_dir=$(make_gitlab_case gitlab-no-pipeline-not-required pipeline=null)
+  printf '{"only_allow_merge_if_pipeline_succeeds":false}\n' > "$case_dir/project.json"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "gitlab-no-pipeline-not-required: a project without required CI should merge"
+  assert_grep "GITLAB_HOST=$MR_HOST api projects/group%2Fsubgroup%2Fproject --hostname $MR_HOST" \
+    "$case_dir/glab.log" "gitlab-no-pipeline-not-required: the project requirement was not read from the URL's project"
+  assert_grep 'the project has no pipeline for this merge request and does not require one' \
+    "$case_dir/stderr" "gitlab-no-pipeline-not-required: the absent pipeline was not reported"
+  merge_line=$(glab_merge_line "$case_dir/glab.log")
+  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $MR_HEAD --yes" ] \
+    || fail "gitlab-no-pipeline-not-required: unexpected merge invocation: '$merge_line'"
+  pass "fm-pr-merge merges a GitLab merge request with no pipeline on a project that does not require one"
+}
+
+test_gitlab_present_pipeline_not_success_refuses() {
+  local case_dir rc status
+  for status in failed pending; do
+    case_dir=$(make_gitlab_case "gitlab-pipeline-$status-not-required" "pipeline_status=$status")
+    printf '{"only_allow_merge_if_pipeline_succeeds":false}\n' > "$case_dir/project.json"
+
+    set +e
+    run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "gitlab-pipeline-$status-not-required: a pipeline that did not succeed should refuse"
+    assert_grep "the head pipeline status is \"$status\", not success" "$case_dir/stderr" \
+      "gitlab-pipeline-$status-not-required: refusal did not name the pipeline status"
+    [ -z "$(glab_merge_line "$case_dir/glab.log")" ] \
+      || fail "gitlab-pipeline-$status-not-required: a merge was attempted despite the refusal"
+  done
+  pass "fm-pr-merge refuses a present GitLab pipeline that did not succeed even when none is required"
+}
+
 test_gitlab_stale_recorded_head_is_reported() {
   local case_dir rc merge_line
   case_dir=$(make_gitlab_case gitlab-stale-head)
@@ -2200,6 +2252,8 @@ test_gitlab_extra_args_forwarded
 test_gitlab_merge_failure_propagates
 test_gitlab_each_condition_refuses_independently
 test_gitlab_reports_every_failing_condition
+test_gitlab_no_pipeline_not_required_merges
+test_gitlab_present_pipeline_not_success_refuses
 test_gitlab_stale_recorded_head_is_reported
 test_gitlab_unreadable_state_refuses
 test_gitlab_invalid_head_refuses
