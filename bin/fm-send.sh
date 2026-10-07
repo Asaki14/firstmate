@@ -416,6 +416,11 @@ fm_send_resolve_target() { # <raw-target>
   fi
 
   case "$raw" in
+  tern:*/*)
+    # bin/backends/tern.sh's "tern:<session>/<block>" shape: the literal
+    # prefix and slash keep it from reading as a tmux session:window.
+    assumed=tern
+    ;;
   *:*)
     colons=$(fm_send_count_colons "$raw")
     if [ "$colons" -ge 2 ]; then
@@ -423,6 +428,10 @@ fm_send_resolve_target() { # <raw-target>
     else
       assumed=tmux
     fi
+    ;;
+  esac
+  case "$raw" in
+  *:*)
     if ! fm_backend_target_exists "$assumed" "$raw"; then
       echo "error: explicit target '$raw' is not a live $assumed endpoint (tried meta=$STATE/$raw.meta; metadata window/terminal lookup; backend=$assumed). Use fm-<id> for a recorded task/lane, or pass a target whose backend endpoint can be verified." >&2
       return 1

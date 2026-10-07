@@ -2060,6 +2060,38 @@ FM_CMUX_CLAUDE_COMPOSER_LIVE=1 bin/fm-test-run.sh tests/fm-cmux-claude-composer-
 That guard still addresses the worker by task selector, so it no longer reaches the typed submit path and is not a current refresh entry point for this guarantee.
 The portable classifier regression is `tests/fm-backend-cmux.test.sh`.
 
+## Tern
+
+The current compatibility floor is Tern 0.4, and the active live evidence uses `tern 0.4.5 (1d14241)` on macOS arm64, verified on 2026-10-05 from a pane of the captain's running Tern.
+Every live check used only `zz-` sessions it created and killed afterwards.
+
+| Guarantee | Command shape | Result |
+| --- | --- | --- |
+| Create | `new session <name> --cwd <dir> --json`, `new tab <session> --cwd <dir> --json` | Returned `{session, tab, block}`; the session stayed `shown: false` and focus did not move. |
+| Unique sessions | `new session` with an existing name | `a session is already called \`<name>\``, exit 1. |
+| Name | `rename <block> fm-<id>` | Named the block's tab. |
+| Literal send | `send <block> text -- <text>` | Typed without submitting; option-shaped text stayed literal. |
+| Keys | `send <block> keys Enter|Escape|ctrl+c|ctrl+u` | Worked; tmux's `C-c` spelling exits 1. |
+| Viewport | `capture <block>` | 24 lines on an 80x24 hidden tab after 200 printed lines; `--scrollback` returned 203. |
+| Fresh block | `capture` before any output | Exit 0. |
+| cwd | `process <block> --json` | `foreground.cwd` followed the live foreground process. |
+| Close | `close <block>` on a running `sleep` | Ended it without confirmation; the emptied session remained with zero tabs. |
+| Absent block | any verb | `no block is called \`<id>\``, exit 1. |
+
+Native omp rendering hid the composer from `capture`, `capture --surfaces`, and `capture --ansi`; with `PI_TUI_NATIVE=0` the composer row `❯ pending draft text` was captured and the shared classifier read `pending`.
+omp 18.6.1's idle composer showed the right-aligned `⇧⇥ to change thinking effort` hint, whose bright keycap survived ghost stripping until the hint joined the shared idle-placeholder set; after that the live verdicts were idle `empty`, typed `pending`, cleared `empty`.
+
+The `firstmate-agents` plugin linked with `tern plugin link` and listed as `window  ready`.
+Its file listed a natively rendered omp primary as `working` and a typed `PI_TUI_NATIVE=0 omp` as `idle`.
+Tern lists an agent only while the typed command line names the harness (`env` and `VAR=` prefixes are stripped; `. file` and `sh -c` are not), and a `PI_TUI_NATIVE=0` omp dropped out of the agent list once a turn started, so Firstmate workers rely on their lifecycle record for busy state and the plugin colors their tabs from unseen alerts.
+
+End-to-end, `FM_BACKEND=tern FM_TERN_SESSION=zz-fmtern-live bin/fm-spawn.sh zztern1 <scratch-repo> --mode local-only --yolo off --harness omp --effort low` spawned `window=tern:zz-fmtern-live/846108557315` with `tern_session=` and `tern_block_id=` metadata in an unshown `fm-zztern1` tab, the omp worker answered its launch brief with `ok`, `fm_backend_agent_state` read `alive`, the composer read `empty`, `bin/fm-send.sh zztern1 <steer>` exited 0 and the worker moved `001.msg` to `handled/` and answered `steered`, and `bin/fm-teardown.sh zztern1` closed the tab and returned the worktree.
+
+```sh
+tests/fm-backend-tern.test.sh
+tests/fm-backend-tern-smoke.test.sh
+```
+
 ## Codex App host tools
 
 A reusable Desktop host-tool smoke ran on 2026-07-06 against Codex Desktop bundle version 26.623.101652, build 4674, bundle id `com.openai.codex`.

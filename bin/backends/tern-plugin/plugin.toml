@@ -1,0 +1,7 @@
+schema = 1
+id = "firstmate-agents"
+name = "Firstmate agents"
+version = "0.1.0"
+description = "Publishes Tern agent state for Firstmate's tern backend; colors fm-<id> task tabs and counts agents in the status line."
+icon = "sparkle"
+window = "window.luau"

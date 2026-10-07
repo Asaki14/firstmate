@@ -33,7 +33,11 @@ FM_SUPERVISOR_BACKEND_DEFAULT="tmux"
 #      fm_backend_herdr_session) and $HERDR_PANE_ID. Checked after $TMUX_PANE so a
 #      tmux pane nested inside herdr still resolves to tmux, matching
 #      fm_backend_detect's innermost-first rule.
-#   4. FM_SUPERVISOR_TARGET_DEFAULT - legacy tmux fallback (may not resolve if the
+#   4. $TERN_PANE with TERM_PROGRAM=tern - Tern injects the block id into every
+#      pane; compose bin/backends/tern.sh's unscoped "tern:/<block>" target
+#      (the block id alone names the pane in Tern's window). Checked after
+#      tmux and herdr, matching fm_backend_detect.
+#   5. FM_SUPERVISOR_TARGET_DEFAULT - legacy tmux fallback (may not resolve if the
 #      session is named differently). Returns 1 so the caller can warn.
 discover_supervisor_target() {
   if [ -n "${FM_SUPERVISOR_TARGET:-}" ]; then
@@ -48,6 +52,10 @@ discover_supervisor_target() {
     printf '%s:%s' "${HERDR_SESSION:-default}" "$HERDR_PANE_ID"
     return 0
   fi
+  if [ -n "${TERN_PANE:-}" ] && [ "${TERM_PROGRAM:-}" = tern ]; then
+    printf 'tern:/%s' "$TERN_PANE"
+    return 0
+  fi
   printf '%s' "$FM_SUPERVISOR_TARGET_DEFAULT"
   return 1
 }
@@ -59,7 +67,8 @@ discover_supervisor_target() {
 #   1. FM_SUPERVISOR_BACKEND env (explicit override).
 #   2. $TMUX_PANE set - tmux.
 #   3. $HERDR_ENV=1 (with $HERDR_PANE_ID present) - herdr.
-#   4. FM_SUPERVISOR_BACKEND_DEFAULT (tmux) - matches the target fallback. Returns 1.
+#   4. $TERN_PANE with TERM_PROGRAM=tern - tern.
+#   5. FM_SUPERVISOR_BACKEND_DEFAULT (tmux) - matches the target fallback. Returns 1.
 discover_supervisor_backend() {
   if [ -n "${FM_SUPERVISOR_BACKEND:-}" ]; then
     printf '%s' "$FM_SUPERVISOR_BACKEND"
@@ -71,6 +80,10 @@ discover_supervisor_backend() {
   fi
   if [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ]; then
     printf 'herdr'
+    return 0
+  fi
+  if [ -n "${TERN_PANE:-}" ] && [ "${TERM_PROGRAM:-}" = tern ]; then
+    printf 'tern'
     return 0
   fi
   printf '%s' "$FM_SUPERVISOR_BACKEND_DEFAULT"
