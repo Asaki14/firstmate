@@ -38,7 +38,10 @@ local COLORS: { [string]: TabColor } = {
 	exited = "red",
 }
 
-local last_signature = ""
+-- nil (never written), distinct from any real signature including the empty
+-- one a window with no agent panes and no fm-* task tabs produces, so a
+-- freshly loaded window always publishes once it knows window_pid.
+local last_signature: string? = nil
 local window_pid: number? = nil
 local pid_pending = false
 local moving = false

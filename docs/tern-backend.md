@@ -38,6 +38,7 @@ With it:
 `FM_TERN_AGENT_STATE_FILE` overrides where the adapter reads that file.
 Tern runs a window plugin's timers only while the window is awake (pane output, input), so an idle window rewrites nothing and the file's age proves nothing.
 The adapter therefore treats the file as absent unless its `window_pid` is still a running `tern` process, so a closed window never reads as a live verdict; a plugin unloaded from a window that stays open leaves its last file in place until that window closes.
+A freshly loaded window publishes a current-format file (version, window_pid, blocks, even when empty) as soon as it knows its own `window_pid`, so the reader never trusts a stale or old-format file from an earlier window; `tests/fm-backend-tern.test.sh` proves this by driving the real `window.luau` through a stubbed host API with the real `luau` CLI (skips cleanly without `luau` on `PATH`).
 
 ### Autostart
 

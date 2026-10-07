@@ -430,6 +430,124 @@ test_busy_lib_trusts_tern_native_busy() {
   pass "fm-busy-lib: trusts Tern's native busy verdict the way it trusts Herdr's"
 }
 
+# --- plugin first-write regression (real Luau, requires `luau` on PATH) -----
+
+# test_plugin_first_write_publishes_current_format: drives the REAL
+# bin/backends/tern-plugin/window.luau (not a reimplementation) through a
+# stubbed window-host API, reproducing the captain's fresh-window race
+# (docs/tern-backend.md): window_pid resolves, but with no agent panes and no
+# fm-* task tabs the signature is the empty string "". A sentinel that starts
+# equal to "" would treat that first scan as "no change" and never publish,
+# leaving a stale or old-format file from an earlier window in place for
+# however long the window stays idle. Skips cleanly without `luau` on PATH
+# (same convention as the jq/tern skips above), consistent with every other
+# optional-tool-gated case in this suite.
+test_plugin_first_write_publishes_current_format() {
+  command -v luau >/dev/null 2>&1 || { pass "luau not installed, skipping the window.luau first-write regression"; return; }
+  local dir harness out write_count body
+  dir="$TMP_ROOT/plugin-first-write"
+  mkdir -p "$dir"
+  harness="$dir/harness.luau"
+  cat >"$harness" <<'LUA'
+local FAKE_PID = 54321
+local pending_body = nil
+local committed_body = nil
+local write_count = 0
+local timer_fn = nil
+
+local function jsonstr(s)
+  return '"' .. tostring(s):gsub('[\\"]', '\\%0'):gsub('\n', '\\n') .. '"'
+end
+local function jsonencode(v)
+  local t = type(v)
+  if t == "table" then
+    if next(v) == nil then return "{}" end
+    local parts = {}
+    for k, val in pairs(v) do
+      table.insert(parts, jsonstr(k) .. ":" .. jsonencode(val))
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+  elseif t == "string" then
+    return jsonstr(v)
+  elseif t == "number" or t == "boolean" then
+    return tostring(v)
+  else
+    return "null"
+  end
+end
+
+-- An empty window: no agent panes, no tabs at all (so no fm-* task tab
+-- either) - the exact shape that produces the empty "" signature.
+local CX = {
+  agents = { list = function(_self) return {} end },
+  session = {
+    sessions = function(_self) return {} end,
+    tabs = function(_self) return {} end,
+    panes = function(_self) return {} end,
+  },
+  layout = { color_tab = function(...) end, focus = function(...) end },
+}
+
+-- Minimal stub of the window-side tern host API window.luau calls. process.run
+-- answers synchronously (real Tern's is async, but window.luau's own callback
+-- already does all its work inside the callback, so synchronous delivery
+-- drives the identical code path within one tick).
+tern = {
+  plugin = { data = "/fake/plugin-data" },
+  json = { encode = jsonencode },
+  fs = {
+    write = function(path, body)
+      pending_body = body
+      write_count += 1
+    end,
+  },
+  process = {
+    run = function(cmd, _opts, cb)
+      if cmd[1] == "/bin/sh" then
+        cb({ status = 0, stdout = tostring(FAKE_PID) .. "\n", stderr = "" }, nil)
+      elseif cmd[1] == "/bin/mv" then
+        committed_body = pending_body
+        cb({ status = 0, stdout = "", stderr = "" }, nil)
+      else
+        cb({ status = 1, stdout = "", stderr = "unhandled" }, nil)
+      end
+    end,
+  },
+  timer = function(_ms, fn)
+    timer_fn = fn
+  end,
+  on = function(_event, _fn) end,
+  command = function(_spec) end,
+  chrome = { status = function(_fn) end, refresh = function() end },
+  log = {
+    warn = function(...)
+      local parts = {}
+      for i = 1, select("#", ...) do parts[i] = tostring(select(i, ...)) end
+      print("WARN: " .. table.concat(parts, " "))
+    end,
+  },
+}
+LUA
+  cat "$ROOT/bin/backends/tern-plugin/window.luau" >>"$harness"
+  cat >>"$harness" <<'LUA'
+
+assert(timer_fn ~= nil, "window.luau did not register its poll timer")
+-- One tick: window_pid resolves synchronously inside this same tick (exactly
+-- as the real find_window_pid callback does), then scan() runs for the very
+-- first time with window_pid known and nothing to report.
+timer_fn(CX)
+print("RESULT_WRITE_COUNT=" .. write_count)
+print("RESULT_COMMITTED_BODY=" .. (committed_body or ""))
+LUA
+  out=$(luau "$harness" 2>&1) || fail "the plugin harness crashed: $out"
+  write_count=$(printf '%s\n' "$out" | sed -n 's/^RESULT_WRITE_COUNT=//p')
+  body=$(printf '%s\n' "$out" | sed -n 's/^RESULT_COMMITTED_BODY=//p')
+  [ "$write_count" = 1 ] || fail "a freshly loaded window must publish agents.json as soon as window_pid is known, even with an empty (no agents, no fm-* tabs) signature; got write_count=$write_count, harness output: $out"
+  printf '%s' "$body" | jq -e '.version == 1 and (.window_pid | type) == "number" and (.blocks | type) == "object"' >/dev/null \
+    || fail "the first-written body must be current format (version, window_pid, blocks), got: $body"
+  pass "window.luau plugin: a freshly loaded window publishes current-format state as soon as window_pid is known, even with no agents/tabs"
+}
+
 # --- seams outside the adapter -----------------------------------------------
 
 # shellcheck disable=SC2016 # The child bash expands "$1" and the probe output.
@@ -539,6 +657,7 @@ test_list_live_lists_home_task_tabs
 test_agent_state_classifies_process
 test_busy_state_reads_plugin_file
 test_busy_lib_trusts_tern_native_busy
+test_plugin_first_write_publishes_current_format
 test_detection_innermost_wins
 test_validate_task_endpoint
 test_explicit_target_routing
