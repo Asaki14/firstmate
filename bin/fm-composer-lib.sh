@@ -472,9 +472,13 @@ FM_COMPOSER_SHELL_PROMPT_GLYPHS=$(printf '%s\n' '>' '$' '%' '#')
 # `⇧⇥` keycap is bright blue (38;2;0;180;255, luminance ~134.7), so ghost
 # stripping leaves that keycap behind; the plain-row remnant rule then needs the
 # full hint here to read the row empty (verified live through Tern 0.4.5 with
-# PI_TUI_NATIVE=0; the hint vanishes once text is typed). FM_COMPOSER_IDLE_RE
+# PI_TUI_NATIVE=0; the hint vanishes once text is typed). Its sibling composer
+# hint, `←← to see N running agent(s)`, takes the same slot with the same
+# styling while a subagent runs (verified live through Tern 0.5.3 on omp
+# 18.6.1); without it every doorbell to a worker waiting on a subagent read
+# `pending` and was skipped until the subagent finished. FM_COMPOSER_IDLE_RE
 # overrides for an unverified harness; matching is case-insensitive.
-FM_COMPOSER_IDLE_RE_DEFAULT='^Type a message\.\.\.$|^Ask anything(\.\.\.|…)|^Plan, search, build anything$|^Add a follow-up$|^Ask Devin to build features, fix bugs, or work on your code$|^⇧⇥ to change thinking effort$'
+FM_COMPOSER_IDLE_RE_DEFAULT='^Type a message\.\.\.$|^Ask anything(\.\.\.|…)|^Plan, search, build anything$|^Add a follow-up$|^Ask Devin to build features, fix bugs, or work on your code$|^⇧⇥ to change thinking effort$|^←← to see [0-9]+ running agents?$'
 
 # Opencode draws a mode/model footer line INSIDE its left-bar composer
 # ("Build · GPT-5.5 Fast OpenAI · high"). It is composer furniture, not typed

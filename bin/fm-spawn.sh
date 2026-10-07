@@ -243,7 +243,8 @@
 #   refuses when it is absent. Every omp launch clears the foreign harness
 #   markers (omp publishes none of its own), sets the Firstmate-owned
 #   FM_OMP_HARNESS=omp detection marker, suppresses the first-run provider
-#   wizard with OMP_SKIP_SETUP=1, forces --auto-approve, pins the working
+#   wizard with OMP_SKIP_SETUP=1, sets ORT_DISABLE_TELEMETRY=1, forces
+#   --auto-approve, pins the working
 #   directory with --cwd, and passes the tracked worker posture overlay
 #   .omp/fm-worker-overlay.yml through --config. That overlay pins composer
 #   shape, plan mode off, prewalk off, and the non-interactive usage-reserve
@@ -2173,7 +2174,15 @@ launch_template() {
   # the launch boundary and documented in the header above: foreign markers
   # cleared (omp has none of its own, so an inherited CLAUDECODE would win),
   # FM_OMP_HARNESS=omp established for bin/fm-harness.sh, OMP_SKIP_SETUP=1
-  # against the fresh-profile provider wizard, --auto-approve so no approval
+  # against the fresh-profile provider wizard, ORT_DISABLE_TELEMETRY=1 because
+  # omp's local tiny-model worker (`omp __omp_worker_tiny_inference`, cwd = the
+  # worktree) loads onnxruntime-node 1.30, whose Microsoft 1DS telemetry falls
+  # back to an in-memory store when it cannot write its database under
+  # ~/Library (always, inside config/worker-sandbox's fence) and then writes an
+  # untracked `:memory:.ses` into the worktree, which blocks fm-teardown.sh's
+  # clean-tree check (verified live with omp 18.6.1 under the fence: present
+  # without the variable, absent with it; it is ORT's own whole-process
+  # telemetry opt-out), --auto-approve so no approval
   # prompt can park an unattended worker, the tracked posture overlay so a
   # captain-level plan, prewalk, or usage dialog cannot either, and --cwd
   # pinned to the worktree because omp's extension discovery is cwd-only. A
@@ -2181,7 +2190,7 @@ launch_template() {
   # naming them with -e as well loads each twice (verified), doubling every
   # session_stop continuation.
   omp)
-    printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u GEMINI_CLI -u CURSOR_AGENT -u CURSOR_INVOKED_AS FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1 __OMPBIN__ --config __OMPWORKERCFG__ --auto-approve --cwd __WORKTREE__'
+    printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u GEMINI_CLI -u CURSOR_AGENT -u CURSOR_INVOKED_AS FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1 ORT_DISABLE_TELEMETRY=1 __OMPBIN__ --config __OMPWORKERCFG__ --auto-approve --cwd __WORKTREE__'
     if [ "$kind" = secondmate ]; then
       printf '%s' ' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     else

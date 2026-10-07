@@ -2080,6 +2080,7 @@ Every live check used only `zz-` sessions it created and killed afterwards.
 
 Native omp rendering hid the composer from `capture`, `capture --surfaces`, and `capture --ansi`; with `PI_TUI_NATIVE=0` the composer row `❯ pending draft text` was captured and the shared classifier read `pending`.
 omp 18.6.1's idle composer showed the right-aligned `⇧⇥ to change thinking effort` hint, whose bright keycap survived ghost stripping until the hint joined the shared idle-placeholder set; after that the live verdicts were idle `empty`, typed `pending`, cleared `empty`.
+On 2026-10-07 with `tern 0.5.3 (b7f1010)` and omp 18.6.1, a `PI_TUI_NATIVE=0` omp in a throwaway Tern session showed `←← to see 1 running agent` in the same slot, with the same bright keycap and dark italic label, while its subagent ran; the shared classifier read that row `pending` until the hint joined the idle-placeholder set, and after that the live verdicts were hint `empty`, typed `pending` (typing replaces the hint), cleared `empty`.
 
 The `firstmate-agents` plugin linked with `tern plugin link` and listed as `window  ready`.
 Its file listed a natively rendered omp primary as `working` and a typed `PI_TUI_NATIVE=0 omp` as `idle`.

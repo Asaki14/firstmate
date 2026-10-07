@@ -110,15 +110,26 @@ test_lock_identity_and_liveness_classification() {
 # --- 2. Launch ---------------------------------------------------------------
 
 # A fake omp that answers `models --json` with a two-provider catalog and exits
-# 0 for everything else (the launch itself is only recorded by the fake tmux).
+# 0 for everything else (the fake tmux records the launch; one test runs it).
+# A run also does what omp 18.6.1's tiny-model worker does inside the worker
+# sandbox, where onnxruntime-node 1.30's telemetry cannot reach its database:
+# unless ORT_DISABLE_TELEMETRY=1, it writes `:memory:.ses` into the --cwd
+# directory (bin/fm-spawn.sh's omp template comment has the live proof).
 make_fake_omp() {  # <fakebin>
   cat > "$1/omp" <<'SH'
 #!/usr/bin/env bash
 case "$1" in
   models)
     printf '%s\n' '{"models":[{"provider":"openai-codex","id":"gpt-6-astra","selector":"openai-codex/gpt-6-astra"},{"provider":"ollama","id":"qwen3:8b","selector":"ollama/qwen3:8b"}]}'
+    exit 0
     ;;
 esac
+cwd=$PWD
+while [ "$#" -gt 0 ]; do
+  [ "$1" = --cwd ] && [ "$#" -gt 1 ] && cwd=$2
+  shift
+done
+[ "${ORT_DISABLE_TELEMETRY:-}" = 1 ] || printf '1790871461994\n1df0651c-c4eb-4d49-b79a-0a58bb90701b\n' > "$cwd/:memory:.ses"
 exit 0
 SH
   chmod +x "$1/omp"
@@ -166,7 +177,7 @@ test_spawn_launch_line_and_worker_wiring() {
   assert_grep "effort=medium" "$state/$id.meta" "meta missing the pinned effort"
   assert_present "$state/$id.omp-ext.ts" "omp spawn did not write the per-task extension"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u GEMINI_CLI -u CURSOR_AGENT -u CURSOR_INVOKED_AS FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1 '$FAKEBIN_DIR/omp'" \
+  assert_contains "$launch" "env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u GEMINI_CLI -u CURSOR_AGENT -u CURSOR_INVOKED_AS FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1 ORT_DISABLE_TELEMETRY=1 '$FAKEBIN_DIR/omp'" \
     "omp launch did not clear foreign markers and establish its own at the launch boundary"
   assert_contains "$launch" "--config '$ROOT/.omp/fm-worker-overlay.yml' --auto-approve --cwd '$WT_DIR'" \
     "omp launch did not carry the tracked posture overlay, --auto-approve, and the pinned working directory"
@@ -180,6 +191,27 @@ test_spawn_launch_line_and_worker_wiring() {
   [ "$(fm_busy_classify tmux fake:w omp "$id" "$state")" = "busy fm-spawn" ] \
     || fail "omp spawn must seed the busy-state contract"
   pass "fm-spawn: the omp launch line clears markers, pins posture, and wires the state-resident extension"
+}
+
+# The launched omp must leave the worktree clean: an untracked `:memory:.ses`
+# makes fm-teardown.sh refuse cleanup of finished work. Runs the exact command
+# fm-spawn typed into the pane against the telemetry-emulating fake omp.
+test_spawn_launch_keeps_ort_telemetry_out_of_worktree() {
+  local rec id=omp-ort-q1 out status launch dirty
+  rec=$(make_spawn_case ort omp "$id")
+  read_case_record "$rec"
+  out=$(run_scout_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --harness omp)
+  status=$?
+  expect_code 0 "$status" "omp scout spawn should succeed: $out"
+  launch=$(grep -F "'$FAKEBIN_DIR/omp'" "$LAUNCH_LOG")
+  [ -n "$launch" ] || fail "no omp launch command was recorded: $(cat "$LAUNCH_LOG")"
+  (cd "$WT_DIR" && bash -c "$launch") || fail "the recorded omp launch did not run: $launch"
+  dirty=$(git -C "$WT_DIR" status --porcelain --untracked-files=all)
+  [ -z "$dirty" ] || fail "the omp launch left the worktree dirty, which blocks cleanup: $dirty"
+  # Non-vacuity: the same fake does litter the worktree when telemetry is on.
+  (cd "$WT_DIR" && env -u ORT_DISABLE_TELEMETRY "$FAKEBIN_DIR/omp" --cwd "$WT_DIR")
+  assert_present "$WT_DIR/:memory:.ses" "the telemetry-emulating fake omp must write its stamp when not opted out"
+  pass "fm-spawn: the omp launch opts ONNX Runtime telemetry out so no :memory:.ses lands in the worktree"
 }
 
 test_spawn_model_validation_scoped_to_listed_providers() {
@@ -245,7 +277,7 @@ test_secondmate_launch_relies_on_discovery() {
     *" -e "*) fail "an omp secondmate launch must name no -e: omp auto-discovers .omp/extensions and a file named both ways loads twice: $launch" ;;
   esac
   assert_contains "$launch" "--config '$ROOT/.omp/fm-worker-overlay.yml' --auto-approve --cwd '$home'" "secondmate launch lost the posture overlay or the pinned home directory: $launch"
-  assert_contains "$launch" "FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1 '$fakebin/omp'" "secondmate launch lost the omp marker or executable"
+  assert_contains "$launch" "FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1 ORT_DISABLE_TELEMETRY=1 '$fakebin/omp'" "secondmate launch lost the omp marker or executable"
   assert_contains "$launch" "FM_SUPERVISION_MODEL=extension" "an omp secondmate must run the extension supervision model"
   assert_absent "$world/home/state/sm.omp-ext.ts" "a secondmate must not receive a per-task worker extension"
   pass "fm-spawn: a real omp secondmate launch relies on auto-discovery while crewmates load one -e"
@@ -952,6 +984,7 @@ EOF
 test_detection_anchored_name_and_marker_precedence
 test_lock_identity_and_liveness_classification
 test_spawn_launch_line_and_worker_wiring
+test_spawn_launch_keeps_ort_telemetry_out_of_worktree
 test_spawn_model_validation_scoped_to_listed_providers
 test_secondmate_launch_relies_on_discovery
 test_secondmate_config_pinned_model_is_validated
