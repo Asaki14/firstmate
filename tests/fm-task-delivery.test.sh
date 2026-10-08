@@ -308,7 +308,7 @@ test_promote_refuses_a_symlinked_task_record() {
 # prints against a capturing fm-send.sh, and asserts on the message the worker would
 # actually receive - for every supported mode.
 test_promotion_delivers_the_real_definition_of_done() {
-  local home meta out sendroot payload mode id brief_dod delivered_dod
+  local home meta out sendroot payload mode id brief_dod delivered_dod contract
   home="$TMP_ROOT/promote-dod/home"
   sendroot="$TMP_ROOT/promote-dod/sendroot"
   mkdir -p "$home/state" "$sendroot/bin"
@@ -355,6 +355,18 @@ STUB
       "$mode: promoted worker did not receive the Captain's intent subsection"
     assert_grep "## Firstmate spec" "$payload" \
       "$mode: promoted worker did not receive the Firstmate spec subsection"
+
+    # Both the delivered prompt and persisted relaunch brief are public outputs.
+    for contract in "$payload" "$home/data/$id/brief.md"; do
+      assert_grep "This replaces the scout rule limiting outside-worktree writes to the report and status file." "$contract" \
+        "$mode: $contract retained the scout-only write restriction"
+      assert_grep "Keep project edits inside this worktree; keep proof and scratch output outside it, under \`$home/data/$id/\` or a temporary directory." "$contract" \
+        "$mode: $contract omitted the ship scratch-location rule"
+      assert_grep "Outside the worktree, write only that task material and the status and steering-inbox records authorized below." "$contract" \
+        "$mode: $contract omitted the ship outside-worktree write boundary"
+      assert_grep "Leave the worktree clean before reporting done." "$contract" \
+        "$mode: $contract omitted the clean-before-done rule"
+    done
 
     # Compare the public outputs of both real generation paths. The promoted
     # payload ends at its Definition of done, as does an ordinary generated
@@ -487,6 +499,38 @@ EOF
   assert_contains "$out" "merged fix/$id into local $main" \
     "local merge did not report the immutable recorded branch"
   pass "fm-merge-local: a registry change cannot redirect an in-flight local-only task"
+}
+
+# A registered name may contain spaces, and the lookup must match the whole
+# name rather than only its first whitespace-delimited token (issue #1977).
+# The longer "foo bar" row is listed before the "foo" row so a leading-prefix
+# match would pick the wrong row if the fix regressed.
+test_project_mode_matches_whole_multiword_names() {
+  local home out err
+  home="$TMP_ROOT/project-mode-multiword/home"
+  mkdir -p "$home/data"
+  cat > "$home/data/projects.md" <<'EOF'
+- 048. Blast- Lease summary drafter [local-only] - fixture (added 2026-01-01)
+- foo bar [local-only +yolo branch=x/] - fixture (added 2026-01-01)
+- foo [direct-PR] - fixture (added 2026-01-01)
+- controlproj [direct-PR] - fixture (added 2026-01-01)
+EOF
+  out=$(FM_HOME="$home" "$PROJECT_MODE" "048. Blast- Lease summary drafter" 2>/dev/null)
+  [ "$out" = "local-only off" ] || fail "a multi-word registered name did not resolve to its own row (got '$out')"
+  err=$(FM_HOME="$home" "$PROJECT_MODE" "048. Blast- Lease summary drafter" 2>&1 >/dev/null)
+  [ -z "$err" ] || fail "a multi-word registered name still warned as not in the registry: $err"
+
+  out=$(FM_HOME="$home" "$PROJECT_MODE" foo 2>/dev/null)
+  [ "$out" = "direct-PR off" ] || fail "a single-word name matched a longer name it prefixes (got '$out')"
+
+  out=$(FM_HOME="$home" "$PROJECT_MODE" "foo bar" 2>/dev/null)
+  [ "$out" = "local-only on" ] || fail "a longer multi-word name did not resolve to its own row (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --branch-prefix "foo bar" 2>/dev/null)
+  [ "$out" = "x/" ] || fail "a multi-word name's registered branch prefix did not resolve (got '$out')"
+
+  out=$(FM_HOME="$home" "$PROJECT_MODE" controlproj 2>/dev/null)
+  [ "$out" = "direct-PR off" ] || fail "a single-word control name regressed (got '$out')"
+  pass "fm-project-mode: the registry lookup matches a whole multi-word name, not just its first token"
 }
 
 # The registry parser survives for the mechanical consumers only. It accepts the
@@ -1591,6 +1635,7 @@ test_promotion_delivers_the_real_definition_of_done
 test_promotion_persists_the_selected_ship_branch
 test_promotion_branch_command_is_shell_safe
 test_local_merge_uses_the_recorded_ship_branch
+test_project_mode_matches_whole_multiword_names
 test_project_mode_maps_the_conditional_policy
 test_project_mode_binds_the_forge_orthogonally
 test_project_mode_refuses_only_a_malformed_forge_binding
