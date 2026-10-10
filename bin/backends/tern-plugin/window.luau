@@ -10,11 +10,12 @@
 --   <tern.plugin.data>/agents.json
 --   {"version":1,"window_pid":<pid>,"blocks":{"<block id>":{...}}}
 --
--- written to a temporary file and renamed into place on every change. Tern
--- runs window timers only while the window is awake (pane output, input), so
--- an idle window rewrites nothing and the file's age says nothing about its
--- truth; the reader instead trusts it only while window_pid, the window that
--- wrote it, is still a running tern process. Each block
+-- handed to a child process that writes a temporary file and renames it into
+-- place on every change. Tern runs window timers only while the window is
+-- awake (pane output, input), so an idle window rewrites nothing and the
+-- file's age says nothing about its truth; the reader instead trusts it only
+-- while window_pid, the window that wrote it, is still a running tern
+-- process. Each block
 -- entry carries `agent` (Tern's agent state, absent for a pane that is not an
 -- agent), `shown` (the tab-bar state below), `busy`, `at_prompt`, `alert`,
 -- `exited`, `tab`, `tab_name` and `session`.
@@ -26,6 +27,14 @@
 -- notification). Firstmate launches omp/pi workers with PI_TUI_NATIVE=0,
 -- which Tern does not list as agents once their first turn starts, so for
 -- those task tabs the alert is the signal that remains.
+--
+-- Budget: Tern disables a window timer until reload once one call runs past
+-- 50 ms, and on a busy window a single process spawn takes tens of
+-- milliseconds on the UI thread, as does a JSON encode. So every timer call
+-- does at most one of those: the poll spawns the pid lookup or scans, never
+-- both, and a changed scan publishes through two follow-up timers, one that
+-- encodes and one that spawns the writer. Nothing here writes a file on the
+-- UI thread.
 
 local POLL_MS = 1000
 local STATE_PATH = tern.plugin.data .. "/agents.json"
@@ -44,7 +53,8 @@ local COLORS: { [string]: TabColor } = {
 local last_signature: string? = nil
 local window_pid: number? = nil
 local pid_pending = false
-local moving = false
+local pid_looked_up = false
+local publishing = false
 local tab_colors: { [number]: string } = {}
 local counts = { working = 0, idle = 0, waiting = 0 }
 local first_waiting: number? = nil
@@ -73,9 +83,49 @@ local function is_task_tab(t: TabInfo?): boolean
 	return t ~= nil and t.name ~= nil and string.sub(t.name, 1, 3) == "fm-"
 end
 
+local function publish_failed(what: string, err: any)
+	publishing = false
+	tern.log.warn("firstmate-agents: " .. what .. " failed", err)
+end
+
+-- The writer: a child that takes the body on stdin, writes the temporary
+-- file and renames it over the published one, so readers never see a torn
+-- file and the UI thread pays only for the spawn.
+local function write_step(body: string, signature: string)
+	local ok, err = pcall(tern.process.run, {
+		"/bin/sh",
+		"-c",
+		'cat >"$1" && exec /bin/mv -f "$1" "$2"',
+		"firstmate-agents",
+		TMP_PATH,
+		STATE_PATH,
+	}, { stdin = body, timeout_ms = 5000 }, function(result: ProcessResult, _cx: WindowCx?)
+		publishing = false
+		if result.status == 0 then
+			last_signature = signature
+		else
+			tern.log.warn("firstmate-agents: write failed", result.stderr)
+		end
+	end)
+	if not ok then
+		publish_failed("write", err)
+	end
+end
+
+local function encode_step(doc: any, signature: string)
+	local ok, body = pcall(tern.json.encode, doc)
+	if not ok then
+		publish_failed("encode", body)
+		return
+	end
+	tern.timer(0, function(_cx: WindowCx?)
+		write_step(body, signature)
+	end)
+end
+
 -- One pass over the window: build the published document, recolor task tabs
--- and recount agents. Kept small: it runs on the UI thread under the 50 ms
--- window budget once a second.
+-- and recount agents. It runs on the UI thread once a second, so it makes
+-- only Tern's cheap reads and leaves encoding and writing to later timers.
 local function scan(cx: WindowCx)
 	local agents: { [number]: AgentBlock } = {}
 	for _, a in cx.agents:list() do
@@ -151,24 +201,14 @@ local function scan(cx: WindowCx)
 	first_waiting = waiting_pane
 
 	local signature = table.concat(keys, ";")
-	if moving or window_pid == nil or signature == last_signature then
+	if publishing or window_pid == nil or signature == last_signature then
 		return
 	end
-	local body = tern.json.encode({ version = 1, window_pid = window_pid, blocks = blocks })
-	local ok, err = pcall(tern.fs.write, TMP_PATH, body)
-	if not ok then
-		tern.log.warn("firstmate-agents: write failed", err)
-		return
-	end
-	moving = true
-	tern.process.run({ "/bin/mv", "-f", TMP_PATH, STATE_PATH }, { timeout_ms = 5000 }, function(result, _cx)
-		moving = false
-		if result.status == 0 then
-			last_signature = signature
-		else
-			tern.log.warn("firstmate-agents: rename failed", result.stderr)
-		end
+	local doc = { version = 1, window_pid = window_pid, blocks = blocks }
+	tern.timer(0, function(_cx: WindowCx?)
+		encode_step(doc, signature)
 	end)
+	publishing = true
 end
 
 -- A child's parent is this window process: the pid the reader checks.
@@ -188,12 +228,19 @@ end
 
 local function tick(cx: WindowCx?)
 	tern.timer(POLL_MS, tick)
-	if window_pid == nil and not pid_pending then
+	local looked_up = pid_looked_up
+	pid_looked_up = false
+	if window_pid == nil and not pid_pending and not looked_up then
+		-- The spawn alone can take most of the budget: no scan this call.
+		-- Never on two calls in a row, so a lookup that keeps failing still
+		-- leaves every other call to scan and recolour.
+		pid_looked_up = true
 		local ok, err = pcall(find_window_pid)
-		if not ok then
-			pid_pending = false
-			tern.log.warn("firstmate-agents: window pid lookup failed", err)
+		if ok then
+			return
 		end
+		pid_pending = false
+		tern.log.warn("firstmate-agents: window pid lookup failed", err)
 	end
 	if cx ~= nil then
 		local ok, err = pcall(scan, cx)

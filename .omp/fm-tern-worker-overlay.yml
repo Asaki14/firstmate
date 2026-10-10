@@ -1,0 +1,7 @@
+# Firstmate omp workers in Tern task panes: bin/fm-spawn.sh passes this as a
+# second `--config` after fm-worker-overlay.yml on the Tern backend only.
+# omp's title spinner changes the pane title several times a second, and each
+# change makes Tern's vertical tab list flicker (docs/tern-backend.md
+# "Title churn"). Never written into the captain's ~/.omp/agent/config.yml.
+tui:
+  titleState: false

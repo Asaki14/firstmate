@@ -116,8 +116,9 @@
 #   blocked backend contract. Default tmux spawns do not write backend= to meta;
 #   absent backend= means tmux. cmux and tern do not support --secondmate
 #   spawns yet. A tern task pane gets PI_TUI_NATIVE=0 exported before launch so
-#   pi and omp draw a capturable terminal UI instead of Tern-native surfaces
-#   (docs/tern-backend.md).
+#   pi and omp draw a capturable terminal UI instead of Tern-native surfaces,
+#   and an omp worker there also gets .omp/fm-tern-worker-overlay.yml, which
+#   stops its title spinner (docs/tern-backend.md).
 #   A backend spawn refusal (missing dependency, version gate, unauthenticated
 #   socket, or unsupported secondmate mode) is terminal for that selected backend;
 #   callers must surface it instead of silently retrying another backend.
@@ -422,7 +423,8 @@
 #     __OMPEXT__   absolute path to state/<task-id>.omp-ext.ts (omp busy-state and
 #                  turn-end extension, written by this script; outside the worktree so
 #                  omp's cwd-only auto-discovery cannot load it a second time)
-#     __OMPWORKERCFG__ absolute path to the tracked .omp/fm-worker-overlay.yml posture overlay
+#     __OMPWORKERCFG__ absolute path to the tracked .omp/fm-worker-overlay.yml posture overlay,
+#                  followed on Tern by `--config` and .omp/fm-tern-worker-overlay.yml
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
 #     __BRIEFDOORBELL__ quoted printable doorbell naming the launch-brief record this
 #                  script published into the receiving home's operational inbox
@@ -5364,6 +5366,12 @@ sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 sq_ompext=$(shell_quote "$STATE/$ID.omp-ext.ts")
 sq_ompcfg=$(shell_quote "${OMP_WORKER_CFG:-$FM_ROOT/.omp/fm-worker-overlay.yml}")
+# Tern: omp's title spinner retitles the pane several times a second, and each
+# title change makes Tern's vertical tab list flicker, so Tern task panes add
+# the overlay that turns it off (docs/tern-backend.md "Title churn").
+if [ "$BACKEND" = tern ]; then
+  sq_ompcfg="$sq_ompcfg --config $(shell_quote "$FM_ROOT/.omp/fm-tern-worker-overlay.yml")"
+fi
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 sq_worktree=$(shell_quote "$WT")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")

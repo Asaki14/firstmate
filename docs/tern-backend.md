@@ -31,7 +31,7 @@ tern plugin list   # firstmate-agents ... window  ready
 The plugin is optional: without it every backend operation still works, and busy state falls back to each harness's own lifecycle record and capture heuristics.
 With it:
 
-- it publishes Tern's agent state for every pane to `<plugins dir>/../plugin-data/firstmate-agents/agents.json` (on macOS `~/Library/Application Support/Tern/plugin-data/firstmate-agents/agents.json`), rewritten atomically on every change and stamped with the pid of the window that wrote it;
+- it publishes Tern's agent state for every pane to `<plugins dir>/../plugin-data/firstmate-agents/agents.json` (on macOS `~/Library/Application Support/Tern/plugin-data/firstmate-agents/agents.json`), replaced atomically on every change and stamped with the pid of the window that wrote it;
 - it colors every `fm-*` task tab: blue while working, green when idle, orange when the agent waits for input or holds an unseen alert, red when it exited;
 - it adds a status-line segment counting working, idle, and waiting agents, and clicking it focuses the first agent that needs you.
 
@@ -39,6 +39,12 @@ With it:
 Tern runs a window plugin's timers only while the window is awake (pane output, input), so an idle window rewrites nothing and the file's age proves nothing.
 The adapter therefore treats the file as absent unless its `window_pid` is still a running `tern` process, so a closed window never reads as a live verdict; a plugin unloaded from a window that stays open leaves its last file in place until that window closes.
 A freshly loaded window publishes a current-format file (version, window_pid, blocks, even when empty) as soon as it knows its own `window_pid`, so the reader never trusts a stale or old-format file from an earlier window; `tests/fm-backend-tern.test.sh` proves this by driving the real `window.luau` through a stubbed host API with the real `luau` CLI (skips cleanly without `luau` on `PATH`).
+
+Tern stops calling a window plugin's timers until `tern plugin reload` once one call runs past 50 ms, and logs `plugin hook exceeded its budget; disabled until reload plugin="firstmate-agents" hook="timer"`; tab colours and the agent count then freeze.
+On a busy window a single process spawn or JSON encode on Tern's UI thread takes tens of milliseconds, so no timer call does more than one of them.
+The one-second poll either starts the window-pid lookup or reads Tern's state, recolours tabs and recounts agents; a changed state is then encoded in one follow-up timer and handed in another to a child process that writes the file and renames it into place, so the UI thread writes no file at all.
+`tests/fm-backend-tern.test.sh` drives the real plugin with the host costs measured on a 30-tab window and fails if any call reaches the budget.
+The plugin cannot shorten Tern's own listing calls, which can stall on a window whose titles churn; the title overlay below removes most of that churn.
 
 ### Autostart
 
@@ -103,6 +109,14 @@ Their composer then never reaches `tern capture`, not even with `--surfaces`, wh
 `fm-spawn.sh` therefore exports `PI_TUI_NATIVE=0` into each Tern task pane before launch, and the launch environment floor forwards it, so workers draw an ordinary terminal UI the shared classifier reads.
 Other harnesses ignore the variable.
 The primary started by `bin/fm-tern-autostart.sh` keeps native rendering.
+
+## Title churn
+
+In Tern 0.6.2's vertical tab list, every pane title change, in any tab of any session, restarts the hover highlight of the row under the pointer and makes a tab held mid-drag jump.
+omp animates a spinner in its terminal title several times a second while it works (its `tui.titleState` setting, on by default), so working omp workers would keep the whole list flickering.
+`fm-spawn.sh` therefore passes Tern omp workers a second `--config` overlay, [`.omp/fm-tern-worker-overlay.yml`](../.omp/fm-tern-worker-overlay.yml), after the worker posture overlay.
+It turns `tui.titleState` off for that worker only, so its title stays still; the user's own omp config, the omp primary, and every other backend keep the spinner.
+A worker's title then no longer shows omp's turn markers, while the plugin's tab colours still show working and needs-you.
 
 ## Current operation and safety
 

@@ -9,8 +9,8 @@
 # test is tests/fm-backend-tern-smoke.test.sh.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the tern adapter)"; exit 0; }
 
@@ -430,30 +430,59 @@ test_busy_lib_trusts_tern_native_busy() {
   pass "fm-busy-lib: trusts Tern's native busy verdict the way it trusts Herdr's"
 }
 
-# --- plugin first-write regression (real Luau, requires `luau` on PATH) -----
+# --- plugin regressions (real Luau, requires `luau` on PATH) ------------------
 
-# test_plugin_first_write_publishes_current_format: drives the REAL
-# bin/backends/tern-plugin/window.luau (not a reimplementation) through a
-# stubbed window-host API, reproducing the captain's fresh-window race
-# (docs/tern-backend.md): window_pid resolves, but with no agent panes and no
-# fm-* task tabs the signature is the empty string "". A sentinel that starts
-# equal to "" would treat that first scan as "no change" and never publish,
-# leaving a stale or old-format file from an earlier window in place for
-# however long the window stays idle. Skips cleanly without `luau` on PATH
-# (same convention as the jq/tern skips above), consistent with every other
-# optional-tool-gated case in this suite.
-test_plugin_first_write_publishes_current_format() {
-  command -v luau >/dev/null 2>&1 || { pass "luau not installed, skipping the window.luau first-write regression"; return; }
-  local dir harness out write_count body
-  dir="$TMP_ROOT/plugin-first-write"
+# run_plugin_harness <name> <driver>: runs the REAL
+# bin/backends/tern-plugin/window.luau (not a reimplementation) against a
+# stubbed window-host API and prints the driver's output. The stub keeps a
+# simulated millisecond clock: timers and process callbacks fire in due order,
+# each one a separate hook the way Tern calls them, and every host call
+# advances the clock by its modeled UI-thread cost. The costs are the ones
+# measured on a busy Tern 0.6.2 window (30 tabs churning their titles): a
+# process spawn 25-33 ms, a JSON encode of 32 panes 14 ms, a file write 8 ms,
+# the pane listing about 2 ms. A child given stdin is the plugin's writer, and
+# its stdin is what lands in agents.json; one given none is the pid lookup.
+# The driver fills WORLD (agents, sessions, tabs, panes) and calls
+# run_until(ms); `hooks` records each hook's simulated duration.
+run_plugin_harness() {
+  local dir harness
+  dir="$TMP_ROOT/plugin-$1"
   mkdir -p "$dir"
   harness="$dir/harness.luau"
   cat >"$harness" <<'LUA'
 local FAKE_PID = 54321
-local pending_body = nil
-local committed_body = nil
+local PID_STATUS = 0
+local COST = { spawn = 33, encode = 14, write = 8, panes = 2, tabs = 1, call = 0.1 }
+local now = 0
+local seq = 0
+local queue = {}
+local hooks = {}
 local write_count = 0
-local timer_fn = nil
+local committed_body = nil
+local colors = {}
+local WORLD = { agents = {}, sessions = {}, tabs = {}, panes = {} }
+
+local function schedule(delay, kind, fn)
+  seq += 1
+  table.insert(queue, { due = now + delay, seq = seq, kind = kind, fn = fn })
+end
+
+local function run_until(t)
+  while true do
+    table.sort(queue, function(a, b)
+      if a.due ~= b.due then return a.due < b.due end
+      return a.seq < b.seq
+    end)
+    local h = queue[1]
+    if h == nil or h.due > t then break end
+    table.remove(queue, 1)
+    if h.due > now then now = h.due end
+    local start = now
+    h.fn()
+    table.insert(hooks, { kind = h.kind, ms = now - start })
+  end
+  now = t
+end
 
 local function jsonstr(s)
   return '"' .. tostring(s):gsub('[\\"]', '\\%0'):gsub('\n', '\\n') .. '"'
@@ -476,49 +505,45 @@ local function jsonencode(v)
   end
 end
 
--- An empty window: no agent panes, no tabs at all (so no fm-* task tab
--- either) - the exact shape that produces the empty "" signature.
 local CX = {
-  agents = { list = function(_self) return {} end },
+  agents = { list = function(_self) now += COST.call; return WORLD.agents end },
   session = {
-    sessions = function(_self) return {} end,
-    tabs = function(_self) return {} end,
-    panes = function(_self) return {} end,
+    sessions = function(_self) now += COST.call; return WORLD.sessions end,
+    tabs = function(_self) now += COST.tabs; return WORLD.tabs end,
+    panes = function(_self) now += COST.panes; return WORLD.panes end,
   },
-  layout = { color_tab = function(...) end, focus = function(...) end },
+  layout = {
+    color_tab = function(_self, id, color) now += COST.call; colors[id] = color or "" end,
+    focus = function(...) end,
+  },
 }
 
--- Minimal stub of the window-side tern host API window.luau calls. process.run
--- answers synchronously (real Tern's is async, but window.luau's own callback
--- already does all its work inside the callback, so synchronous delivery
--- drives the identical code path within one tick).
 tern = {
   plugin = { data = "/fake/plugin-data" },
-  json = { encode = jsonencode },
-  fs = {
-    write = function(path, body)
-      pending_body = body
-      write_count += 1
-    end,
-  },
+  json = { encode = function(v) now += COST.encode; return jsonencode(v) end },
+  fs = { write = function(_path, _body) now += COST.write end },
   process = {
-    run = function(cmd, _opts, cb)
-      if cmd[1] == "/bin/sh" then
-        cb({ status = 0, stdout = tostring(FAKE_PID) .. "\n", stderr = "" }, nil)
-      elseif cmd[1] == "/bin/mv" then
-        committed_body = pending_body
-        cb({ status = 0, stdout = "", stderr = "" }, nil)
+    run = function(_argv, opts, cb)
+      now += COST.spawn
+      local result = { status = 0, stdout = "", stderr = "", timed_out = false }
+      if opts and opts.stdin then
+        local body = opts.stdin
+        schedule(5, "process", function()
+          write_count += 1
+          committed_body = body
+          cb(result, CX)
+        end)
       else
-        cb({ status = 1, stdout = "", stderr = "unhandled" }, nil)
+        result.status = PID_STATUS
+        result.stdout = tostring(FAKE_PID) .. "\n"
+        schedule(5, "process", function() cb(result, CX) end)
       end
     end,
   },
-  timer = function(_ms, fn)
-    timer_fn = fn
-  end,
+  timer = function(ms, fn) schedule(ms, "timer", function() fn(CX) end) end,
   on = function(_event, _fn) end,
   command = function(_spec) end,
-  chrome = { status = function(_fn) end, refresh = function() end },
+  chrome = { status = function(_fn) end, refresh = function() now += COST.call end },
   log = {
     warn = function(...)
       local parts = {}
@@ -528,24 +553,113 @@ tern = {
   },
 }
 LUA
-  cat "$ROOT/bin/backends/tern-plugin/window.luau" >>"$harness"
-  cat >>"$harness" <<'LUA'
+  sed '1{/^--!strict/d;}' "$ROOT/bin/backends/tern-plugin/window.luau" >>"$harness"
+  printf '\n%s\n' "$2" >>"$harness"
+  luau "$harness" 2>&1
+}
 
-assert(timer_fn ~= nil, "window.luau did not register its poll timer")
--- One tick: window_pid resolves synchronously inside this same tick (exactly
--- as the real find_window_pid callback does), then scan() runs for the very
--- first time with window_pid known and nothing to report.
-timer_fn(CX)
+# test_plugin_first_write_publishes_current_format: reproduces the captain's
+# fresh-window race (docs/tern-backend.md): window_pid resolves, but with no
+# agent panes and no fm-* task tabs the signature is the empty string "". A
+# sentinel that starts equal to "" would treat that first scan as "no change"
+# and never publish, leaving a stale or old-format file from an earlier window
+# in place for however long the window stays idle. Skips cleanly without
+# `luau` on PATH (same convention as the jq/tern skips above), consistent with
+# every other optional-tool-gated case in this suite.
+test_plugin_first_write_publishes_current_format() {
+  command -v luau >/dev/null 2>&1 || { pass "luau not installed, skipping the window.luau first-write regression"; return; }
+  local out write_count body
+  out=$(run_plugin_harness first-write '
+run_until(3000)
 print("RESULT_WRITE_COUNT=" .. write_count)
 print("RESULT_COMMITTED_BODY=" .. (committed_body or ""))
-LUA
-  out=$(luau "$harness" 2>&1) || fail "the plugin harness crashed: $out"
+') || fail "the plugin harness crashed: $out"
   write_count=$(printf '%s\n' "$out" | sed -n 's/^RESULT_WRITE_COUNT=//p')
   body=$(printf '%s\n' "$out" | sed -n 's/^RESULT_COMMITTED_BODY=//p')
   [ "$write_count" = 1 ] || fail "a freshly loaded window must publish agents.json as soon as window_pid is known, even with an empty (no agents, no fm-* tabs) signature; got write_count=$write_count, harness output: $out"
   printf '%s' "$body" | jq -e '.version == 1 and (.window_pid | type) == "number" and (.blocks | type) == "object"' >/dev/null \
     || fail "the first-written body must be current format (version, window_pid, blocks), got: $body"
   pass "window.luau plugin: a freshly loaded window publishes current-format state as soon as window_pid is known, even with no agents/tabs"
+}
+
+# test_plugin_hooks_stay_inside_tern_budget: Tern disables a window timer until
+# reload once one call runs past 50 ms ("plugin hook exceeded its budget;
+# disabled until reload plugin=firstmate-agents hook=timer"), after which task
+# tab colours and the agent count freeze. With 40 fm-* worker tabs whose state
+# changes every second, no single hook may exceed the budget at the measured
+# costs, and the plugin must still publish and colour the final state.
+test_plugin_hooks_stay_inside_tern_budget() {
+  command -v luau >/dev/null 2>&1 || { pass "luau not installed, skipping the window.luau budget regression"; return; }
+  local out max kind writes body orange green
+  out=$(run_plugin_harness budget '
+local N = 40
+local function world(state, busy, alert_even)
+  WORLD.sessions = { { id = 1, name = "fm" } }
+  WORLD.tabs, WORLD.panes, WORLD.agents = {}, {}, {}
+  for i = 1, N do
+    local tab, pane = 100 + i, 200 + i
+    table.insert(WORLD.tabs, { id = tab, name = string.format("fm-%02d", i), session = 1, pane = pane })
+    table.insert(WORLD.panes, { pane = pane, tab = tab, title = "omp", busy = busy, at_prompt = not busy,
+      alert = alert_even and i % 2 == 0, exited = nil })
+    table.insert(WORLD.agents, { pane = pane, state = state, cwd = "/work" })
+  end
+end
+for second = 1, 10 do
+  world(if second % 2 == 0 then "working" else "idle", second % 2 == 0, second % 3 == 0)
+  run_until(second * 1000 + 500)
+end
+world("idle", false, true)
+run_until(15000)
+local max, kind = 0, ""
+for _, h in hooks do
+  if h.ms > max then max, kind = h.ms, h.kind end
+end
+local orange, green = 0, 0
+for _, c in colors do
+  if c == "orange" then orange += 1 elseif c == "green" then green += 1 end
+end
+print("RESULT_MAX_HOOK_MS=" .. max)
+print("RESULT_MAX_HOOK_KIND=" .. kind)
+print("RESULT_WRITE_COUNT=" .. write_count)
+print("RESULT_COLORS=" .. orange .. " " .. green)
+print("RESULT_COMMITTED_BODY=" .. (committed_body or ""))
+') || fail "the plugin harness crashed: $out"
+  max=$(printf '%s\n' "$out" | sed -n 's/^RESULT_MAX_HOOK_MS=//p')
+  kind=$(printf '%s\n' "$out" | sed -n 's/^RESULT_MAX_HOOK_KIND=//p')
+  writes=$(printf '%s\n' "$out" | sed -n 's/^RESULT_WRITE_COUNT=//p')
+  read -r orange green <<<"$(printf '%s\n' "$out" | sed -n 's/^RESULT_COLORS=//p')"
+  body=$(printf '%s\n' "$out" | sed -n 's/^RESULT_COMMITTED_BODY=//p')
+  awk -v m="$max" 'BEGIN { exit !(m != "" && m + 0 < 50) }' \
+    || fail "every plugin hook must stay under Tern's 50 ms budget on a busy window; the longest $kind hook took ${max} ms, harness output: $out"
+  [ "${writes:-0}" -ge 2 ] || fail "the plugin must keep publishing while worker state changes, got $writes writes: $out"
+  [ "$orange $green" = "20 20" ] || fail "the final state must colour 20 tabs needing input orange and 20 idle tabs green, got orange=$orange green=$green"
+  printf '%s' "$body" | jq -e '(.blocks | length) == 40 and ([.blocks[] | select(.shown == "waiting_input")] | length) == 20 and ([.blocks[] | select(.busy)] | length) == 0' >/dev/null \
+    || fail "agents.json must end on the final worker state, got: $body"
+  pass "window.luau plugin: with 40 busy worker tabs every hook stays under Tern's 50 ms budget (longest ${max} ms) and the final state is published and coloured"
+}
+
+# test_plugin_scans_while_pid_lookup_fails: a timer call that spawns the
+# window-pid lookup skips its scan, so a lookup that keeps failing must not be
+# retried on every call, or tab colours and the agent count never update.
+test_plugin_scans_while_pid_lookup_fails() {
+  command -v luau >/dev/null 2>&1 || { pass "luau not installed, skipping the failing pid lookup regression"; return; }
+  local out colored
+  out=$(run_plugin_harness pid-fails '
+PID_STATUS = 1
+WORLD.sessions = { { id = 1, name = "fm" } }
+WORLD.tabs = { { id = 101, name = "fm-01", session = 1, pane = 201 } }
+WORLD.panes = { { pane = 201, tab = 101, title = "omp", busy = true, at_prompt = false, alert = false, exited = nil } }
+WORLD.agents = { { pane = 201, state = "working", cwd = "/work" } }
+run_until(10500)
+print("RESULT_COLOR=" .. (colors[101] or "none"))
+print("RESULT_WRITES=" .. write_count)
+') || fail "the plugin harness crashed: $out"
+  colored=$(printf '%s\n' "$out" | sed -n 's/^RESULT_COLOR=//p')
+  [ -n "$colored" ] && [ "$colored" != none ] \
+    || fail "a failing window-pid lookup must not starve the scan that colours task tabs: $out"
+  [ "$(printf '%s\n' "$out" | sed -n 's/^RESULT_WRITES=//p')" = 0 ] \
+    || fail "the plugin must not publish agents.json without a window pid: $out"
+  pass "window.luau plugin: a failing window-pid lookup still lets every other timer call colour task tabs"
 }
 
 # --- seams outside the adapter -----------------------------------------------
@@ -631,6 +745,29 @@ test_secondmate_spawn_refuses_tern() {
   pass "fm-spawn.sh: refuses backend=tern for --secondmate spawns"
 }
 
+test_omp_spawn_carries_tern_title_overlay() {
+  local case_dir="$TMP_ROOT/omp-spawn" home fakebin id=tern-omp-q1 out status staged launch
+  make_tern_world omp-spawn
+  home="$case_dir/home"
+  fakebin=$(make_spawn_fakebin "$case_dir/fake" omp)
+  fm_test_spawn_home "$home" omp
+  fm_git_worktree "$case_dir/project" "$case_dir/wt" wt-tern-omp
+  fm_test_spawn_brief "$home" "$id"
+  # The first task block in an empty world is 102; its shell sits in the worktree.
+  printf '{"pane":102,"child":{"pid":1,"name":"zsh","argv":["zsh"],"cwd":"%s"},"group":1,"foreground":{"pid":1,"name":"zsh","argv":["zsh"],"cwd":"%s"}}' \
+    "$case_dir/wt" "$case_dir/wt" >"$W/process/102"
+  out=$(fm_test_run_spawn "$home" "$case_dir/wt" "$fakebin" "$id" "$case_dir/project" --harness omp --backend tern --scout)
+  status=$?
+  [ "$status" -eq 0 ] || fail "an omp scout spawn on the tern backend should succeed: $out"
+  staged=$(sed -n "s/^tern${US}send${US}102${US}text${US}--${US}\. '\(.*\)'\$/\1/p" "$TERN_LOG")
+  [ -f "$staged" ] || fail "the tern spawn did not type a staged launch file: $(tr "$US" ' ' <"$TERN_LOG")"
+  launch=$(cat "$staged")
+  rm -rf "/tmp/fm-$id" "/tmp/fm-$id+"*
+  assert_contains "$launch" "--config '$ROOT/.omp/fm-worker-overlay.yml' --config '$ROOT/.omp/fm-tern-worker-overlay.yml' --auto-approve" \
+    "an omp worker on tern must add the title-spinner overlay after the posture overlay and before --auto-approve"
+  pass "fm-spawn.sh: an omp worker on tern carries the title-spinner overlay"
+}
+
 test_version_check() {
   make_tern_world version
   fm_backend_tern_version_check || fail "0.4.5 must pass the version gate"
@@ -658,9 +795,12 @@ test_agent_state_classifies_process
 test_busy_state_reads_plugin_file
 test_busy_lib_trusts_tern_native_busy
 test_plugin_first_write_publishes_current_format
+test_plugin_hooks_stay_inside_tern_budget
+test_plugin_scans_while_pid_lookup_fails
 test_detection_innermost_wins
 test_validate_task_endpoint
 test_explicit_target_routing
 test_supervisor_discovery
 test_secondmate_spawn_refuses_tern
+test_omp_spawn_carries_tern_title_overlay
 test_version_check

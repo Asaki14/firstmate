@@ -2086,6 +2086,10 @@ The `firstmate-agents` plugin linked with `tern plugin link` and listed as `wind
 Its file listed a natively rendered omp primary as `working` and a typed `PI_TUI_NATIVE=0 omp` as `idle`.
 Tern lists an agent only while the typed command line names the harness (`env` and `VAR=` prefixes are stripped; `. file` and `sh -c` are not), and a `PI_TUI_NATIVE=0` omp dropped out of the agent list once a turn started, so Firstmate workers rely on their lifecycle record for busy state and the plugin colors their tabs from unseen alerts.
 
+On 2026-10-09 with `tern 0.6.2 (4b3ed42)` and omp 18.6.1, in a headless `tern serve` with its own `TERN_CONFIG_DIR` and the vertical tab list on, two `PI_TUI_NATIVE=0` omp panes ran the same short tool-using prompt while `ctl tree .nav-row` was sampled 200 times about 100 ms apart.
+The default omp's row title changed 68 times through 21 distinct spinner titles (`π ⠇ work-a`, `π ⠋ work-a`, ...); the one given `--config .omp/fm-tern-worker-overlay.yml` changed 3 times (`π: work-b`, then `π: done`, plus the focus suffix) and also finished the prompt.
+In the same serve with 30 `fm-*` tabs retitling every 0.12 s, a timed copy of `firstmate-agents` measured on Tern's UI thread a process spawn at 25-33 ms, `tern.json.encode` of 32 panes at 14 ms, `tern.fs.write` at 8 ms and `cx.session:panes()` usually at 1-2 ms; the pre-split poll logged `timer exceeded 50 ms`, and after the split one `panes()` call alone still stalled past 50 ms under that churn.
+
 End-to-end, `FM_BACKEND=tern FM_TERN_SESSION=zz-fmtern-live bin/fm-spawn.sh zztern1 <scratch-repo> --mode local-only --yolo off --harness omp --effort low` spawned `window=tern:zz-fmtern-live/846108557315` with `tern_session=` and `tern_block_id=` metadata in an unshown `fm-zztern1` tab, the omp worker answered its launch brief with `ok`, `fm_backend_agent_state` read `alive`, the composer read `empty`, `bin/fm-send.sh zztern1 <steer>` exited 0 and the worker moved `001.msg` to `handled/` and answered `steered`, and `bin/fm-teardown.sh zztern1` closed the tab and returned the worktree.
 
 ```sh
