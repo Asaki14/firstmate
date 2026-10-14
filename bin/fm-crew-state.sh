@@ -1264,19 +1264,19 @@ if ! pane_readable "$BACKEND_TARGET"; then
   # Backends with no classifier (orca, zellij, and cmux all report unverified)
   # keep their historical capture-failure-means-gone reading.
   case "$TASK_BACKEND" in
-    tmux|herdr) AGENT_STATE=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET") ;;
+    tmux|herdr|tern) AGENT_STATE=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET") ;;
     *) AGENT_STATE=none ;;
   esac
   case "$TASK_BACKEND:$AGENT_STATE" in
-    tmux:alive|herdr:alive)
+    tmux:alive|herdr:alive|tern:alive)
       ;;
-    tmux:missing|herdr:missing)
+    tmux:missing|herdr:missing|tern:missing)
       emit unknown none "backend target gone: $BACKEND_TARGET"
       ;;
-    tmux:dead|herdr:dead)
+    tmux:dead|herdr:dead|tern:dead)
       emit unknown none "backend target gone: $BACKEND_TARGET (agent gone, pane shell remains)"
       ;;
-    tmux:*|herdr:*)
+    tmux:*|herdr:*|tern:*)
       emit unknown none "backend unreachable ($TASK_BACKEND endpoint state: $AGENT_STATE)"
       ;;
     *)

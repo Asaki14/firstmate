@@ -27,6 +27,10 @@
 # marker) with no explicit backend setting - unlike Orca, which stays
 # never-auto-detected because it also owns the task worktree; see
 # docs/cmux-backend.md for its empirical basis.
+# P6 adds bin/backends/tern.sh, also EXPERIMENTAL and spawn-capable, behind
+# `--backend tern`/`FM_BACKEND=tern`/`config/backend`, and behind runtime
+# auto-detection when firstmate itself runs in a Tern pane ($TERN_PANE with
+# TERM_PROGRAM=tern); see docs/tern-backend.md for its empirical basis.
 # Codex App is intentionally not in the known set yet.
 # docs/codex-app-backend.md owns that blocked backend contract.
 #
@@ -34,7 +38,7 @@
 # treats that as `tmux` (fm_backend_of_meta), and fm-spawn.sh does not write
 # `backend=tmux` for a default-backend task, so existing and newly spawned
 # default-path metas stay byte-identical. Only a task spawned on a non-tmux
-# spawn-capable backend, currently herdr, zellij, orca, or cmux, carries an
+# spawn-capable backend, currently herdr, zellij, orca, cmux, or tern, carries an
 # explicit `backend=` line.
 #
 # Event-source framing (herdr-addendum "Events as the core abstraction"): a
@@ -66,9 +70,11 @@ FM_BACKEND_CONFIG_DIR="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 # spawn-capable; unlike tmux/herdr/zellij it is also the worktree provider.
 # cmux is EXPERIMENTAL and spawn-capable, session-provider-only like
 # herdr/zellij - verified against the real 0.64.17 binary (docs/cmux-backend.md).
+# tern is EXPERIMENTAL and spawn-capable, session-provider-only like cmux -
+# verified against the real 0.4.5 binary (docs/tern-backend.md).
 # codex-app remains deliberately absent; see docs/codex-app-backend.md.
-FM_BACKEND_KNOWN="tmux herdr zellij orca cmux"
-FM_BACKEND_SPAWN="tmux herdr zellij orca cmux"
+FM_BACKEND_KNOWN="tmux herdr zellij orca cmux tern"
+FM_BACKEND_SPAWN="tmux herdr zellij orca cmux tern"
 
 # fm_backend_list_contains: whitespace-delimited membership without relying on
 # shell word splitting. fm-backend.sh is normally sourced by bash scripts, but
@@ -115,6 +121,13 @@ fm_backend_is_known() {  # <name>
 # marker set alongside CMUX_WORKSPACE_ID always means that multiplexer is the
 # innermost, currently-executing layer and must win.
 #
+# Tern injects TERN_PANE (the block id, plus TERN_PANE_SOCKET and the window
+# keys) and TERM_PROGRAM=tern into every pane it spawns. Like cmux it is a
+# terminal application, so tmux and herdr markers win over it. It is checked
+# before cmux and requires BOTH markers: TERM_PROGRAM is rewritten by the
+# innermost terminal, so a TERN_PANE inherited by a terminal started from a
+# Tern pane does not claim that terminal for Tern.
+#
 # cmux FALLBACK signals (docs/cmux-backend.md "Runtime auto-detection" owns
 # the empirical record): cmux's bundled `claude` PATH shim routes through
 # cmux-claude-wrapper, whose passthrough path unsets every CMUX_* variable
@@ -134,7 +147,7 @@ fm_backend_is_known() {  # <name>
 #      tmux, where the tmux server reparents to launchd and the chain never
 #      reaches cmux - which is fine, because $TMUX already won there.
 # Callers needing the winning signal read FM_BACKEND_DETECT_SIGNAL (set to
-# TMUX, HERDR_ENV, CMUX_WORKSPACE_ID, bundle-id, or ancestry) and
+# TMUX, HERDR_ENV, TERN_PANE, CMUX_WORKSPACE_ID, bundle-id, or ancestry) and
 # FM_BACKEND_DETECTED after a direct (non-command-substitution) call.
 FM_BACKEND_CMUX_BUNDLE_ID="com.cmuxterm.app"
 
@@ -151,6 +164,12 @@ fm_backend_detect() {
     FM_BACKEND_DETECTED=herdr
     FM_BACKEND_DETECT_SIGNAL=HERDR_ENV
     printf 'herdr'
+    return 0
+  fi
+  if [ -n "${TERN_PANE:-}" ] && [ "${TERM_PROGRAM:-}" = tern ]; then
+    FM_BACKEND_DETECTED=tern
+    FM_BACKEND_DETECT_SIGNAL=TERN_PANE
+    printf 'tern'
     return 0
   fi
   if [ -n "${CMUX_WORKSPACE_ID:-}" ]; then
@@ -267,6 +286,9 @@ fm_backend_name() {
       esac
       echo "NOTICE: auto-detected cmux runtime ($marker) - spawning into the EXPERIMENTAL cmux backend. Set config/backend or pass --backend tmux to opt out." >&2
     fi
+    if [ "$detected" = tern ]; then
+      echo "NOTICE: auto-detected Tern runtime (TERN_PANE with TERM_PROGRAM=tern) - spawning into the EXPERIMENTAL tern backend. Set config/backend or pass --backend tmux to opt out." >&2
+    fi
     printf '%s' "$detected"
     return 0
   fi
@@ -296,12 +318,12 @@ fm_backend_validate_spawn() {  # <name>
 # docs/configuration.md "Toolchain" and bootstrap's COMMON list). This is the
 # single owner of the per-backend dependency delta, so bootstrap follows the
 # RESOLVED backend instead of demanding an inactive backend's tools. Each set is:
-#   - the session-provider CLI itself (tmux/herdr/zellij/orca/cmux);
-#   - jq, for the JSON-emitting adapters (herdr, zellij, cmux) whose spawn/liveness
+#   - the session-provider CLI itself (tmux/herdr/zellij/orca/cmux/tern);
+#   - jq, for the JSON-emitting adapters (herdr, zellij, cmux, tern) whose spawn/liveness
 #     paths parse the backend's JSON output (see each adapter's
 #     tool check, e.g. fm_backend_herdr_tool_check);
 #   - the treehouse worktree provider for every session-provider-only backend
-#     (tmux, herdr, zellij, cmux); orca owns its own task worktree and terminal,
+#     (tmux, herdr, zellij, cmux, tern); orca owns its own task worktree and terminal,
 #     so it drops both treehouse and any other backend's session CLI.
 # Prints a single space-separated line and returns 0 for a known backend; returns
 # 1 and prints nothing for an unknown backend.
@@ -311,6 +333,7 @@ fm_backend_required_tools() {  # <backend>
     herdr)  printf '%s' 'herdr jq treehouse' ;;
     zellij) printf '%s' 'zellij jq treehouse' ;;
     cmux)   printf '%s' 'cmux jq treehouse' ;;
+    tern)   printf '%s' 'tern jq treehouse' ;;
     orca)   printf '%s' 'orca' ;;
     *) return 1 ;;
   esac
@@ -324,6 +347,10 @@ fm_backend_required_tool_available() {  # <backend> <tool>
     cmux:cmux)
       fm_backend_source cmux >/dev/null 2>&1 || return 1
       fm_backend_cmux_bin >/dev/null 2>&1
+      ;;
+    tern:tern)
+      fm_backend_source tern >/dev/null 2>&1 || return 1
+      fm_backend_tern_bin >/dev/null 2>&1
       ;;
     *) command -v "$tool" >/dev/null 2>&1 ;;
   esac
@@ -544,6 +571,20 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         return 1
       fi
       ;;
+    tern)
+      [ "$binding" = "$id" ] || {
+        echo "REFUSED: legacy Tern endpoint metadata for task $id lacks an exact task binding; preserving task state." >&2
+        return 1
+      }
+      recorded_session=$(fm_backend_meta_exact_value "$meta" tern_session) || recorded_session=
+      pane=$(fm_backend_meta_exact_value "$meta" tern_block_id) || pane=
+      case "$pane" in *[!0-9]*) pane= ;; esac
+      if [ -z "$recorded_session" ] || [ -z "$pane" ] || [ "$window" != "tern:$recorded_session/$pane" ] \
+        || ! fm_backend_endpoint_atom_valid "$recorded_session"; then
+        echo "REFUSED: Tern endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
+        return 1
+      fi
+      ;;
   esac
   # shellcheck disable=SC2034 # Output globals are consumed by sourcing callers.
   FM_BACKEND_VALIDATED_BACKEND=$backend
@@ -599,6 +640,11 @@ fm_backend_of_selector() {  # <raw-target> <resolved-target> <state-dir>
     meta=$(fm_backend_meta_for_window "$resolved" "$state" 2>/dev/null || true)
     [ -n "$meta" ] && { fm_backend_of_meta "$meta"; return 0; }
   fi
+  # A Tern target names its backend in its own shape (bin/backends/tern.sh);
+  # every other unrecorded explicit target keeps the legacy tmux reading.
+  case "${resolved:-$raw}" in
+    tern:*/*) printf 'tern'; return 0 ;;
+  esac
   printf 'tmux'
 }
 
@@ -643,6 +689,9 @@ fm_backend_source() {  # <name>
     cmux)
       set -- fm-backend-hometag-lib.sh fm-composer-lib.sh
       ;;
+    tern)
+      set -- fm-backend-hometag-lib.sh fm-composer-lib.sh fm-agent-process-lib.sh
+      ;;
     *)
       return 1
       ;;
@@ -686,6 +735,13 @@ fm_backend_source() {  # <name>
         # shellcheck source=/dev/null
         . "$adapter" || return 1
         _FM_BACKEND_CMUX_SOURCED=1
+      fi
+      ;;
+    tern)
+      if [ -z "${_FM_BACKEND_TERN_SOURCED:-}" ]; then
+        # shellcheck source=/dev/null
+        . "$adapter" || return 1
+        _FM_BACKEND_TERN_SOURCED=1
       fi
       ;;
   esac
@@ -760,6 +816,7 @@ fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
     zellij) fm_backend_zellij_capture "$@" ;;
     orca) fm_backend_orca_capture "$@" ;;
     cmux) fm_backend_cmux_capture "$@" ;;
+    tern) fm_backend_tern_capture "$@" ;;
     *) echo "error: no capture implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -785,8 +842,9 @@ fm_backend_monitor_capture() {  # <backend> <target> <lines> [expected-label]
 # pending live verification: its `read-screen` without `--scrollback` plausibly
 # reads only the viewport, but that has not been observed on a real cmux, and
 # the adapter's own capture opts into history with `--scrollback`. orca's
-# `terminal read --limit` is a history read with no viewport mode.
-FM_BACKEND_VISIBLE_CAPTURE="tmux herdr zellij"
+# `terminal read --limit` is a history read with no viewport mode. tern's
+# `capture` without --scrollback is the viewport only (verified live on 0.4.5).
+FM_BACKEND_VISIBLE_CAPTURE="tmux herdr zellij tern"
 
 # fm_backend_visible_capture_supported: whether <backend> can read the visible
 # viewport WITHOUT scrollback. Callers that must not mistake a scrolled-away
@@ -820,6 +878,7 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
     zellij) fm_backend_zellij_send_key "$@" ;;
     orca) fm_backend_orca_send_key "$@" ;;
     cmux) fm_backend_cmux_send_key "$@" ;;
+    tern) fm_backend_tern_send_key "$@" ;;
     *) echo "error: no send-key implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -860,6 +919,7 @@ fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sl
     zellij) fm_backend_zellij_send_text_submit "$@" || rc=$? ;;
     orca) fm_backend_orca_send_text_submit "$@" || rc=$? ;;
     cmux) fm_backend_cmux_send_text_submit "$@" || rc=$? ;;
+    tern) fm_backend_tern_send_text_submit "$@" || rc=$? ;;
     *) echo "error: no send-text implementation for backend '$backend'" >&2; rc=1 ;;
   esac
   fm_composer_dialog_sink_release
@@ -889,6 +949,7 @@ fm_backend_kill() {  # <backend> <target>
     zellij) fm_backend_zellij_kill "$@" ;;
     orca) fm_backend_orca_kill "$@" ;;
     cmux) fm_backend_cmux_kill "$@" ;;
+    tern) fm_backend_tern_kill "$@" ;;
     *) echo "error: no kill implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -926,6 +987,7 @@ fm_backend_busy_state() {  # <backend> <target>
   fm_backend_source "$backend" || { printf 'unknown'; return 0; }
   case "$backend" in
     herdr) fm_backend_herdr_busy_state "$@" ;;
+    tern) fm_backend_tern_busy_state "$@" ;;
     *) printf 'unknown' ;;
   esac
 }
@@ -951,6 +1013,7 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
     herdr) fm_backend_herdr_composer_state "$@" ;;
     orca) fm_backend_orca_composer_state "$@" ;;
     cmux) fm_backend_cmux_composer_state "$@" ;;
+    tern) fm_backend_tern_composer_state "$@" ;;
     zellij) fm_backend_zellij_composer_state "$@" ;;
     *) printf 'unknown' ;;
   esac
@@ -1001,6 +1064,10 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       fm_backend_source cmux || return 1
       fm_backend_cmux_target_ready "$target" "$expected_label"
       ;;
+    tern)
+      fm_backend_source tern || return 1
+      fm_backend_tern_target_ready "$target" "$expected_label"
+      ;;
     *)
       return 1
       ;;
@@ -1024,15 +1091,18 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 # which verifies a registered agent against `pane process-info` and the real
 # process table, so a registration Herdr kept over a shell-only pane reads
 # `dead` here (issue #4115) - then maps a positively stopped session server to
-# `missing` only in this recovery-grade view. Zellij remains unverified because
+# `missing` only in this recovery-grade view. Tern reads the exact block from
+# its window inventory and classifies `tern process`'s foreground process
+# group. Zellij remains unverified because
 # its secondmate ghost-tab and agent-process recovery path has not been
-# empirically validated. Orca and cmux do not support secondmate spawns.
+# empirically validated. Orca, cmux, and tern do not support secondmate spawns.
 fm_backend_agent_state() {  # <backend> <target>
   local backend=$1 target=$2
   fm_backend_source "$backend" || { printf 'unverified'; return 0; }
   case "$backend" in
     tmux) fm_backend_tmux_agent_state "$target" ;;
     herdr) fm_backend_herdr_agent_state "$target" ;;
+    tern) fm_backend_tern_agent_state "$target" ;;
     *) printf 'unverified' ;;
   esac
 }

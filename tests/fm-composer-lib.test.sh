@@ -486,6 +486,41 @@ test_matrix_omp_status_row_bounds_bare_composer() {
   pass "matrix: omp's status row bounds the bare composer's wrap region"
 }
 
+test_matrix_omp_running_agent_hint_is_idle() {
+  # While a subagent runs, omp 18.6.1 right-aligns `←← to see N running
+  # agent(s)` on its EMPTY bare `❯` row: a bright accent keycap that survives
+  # ghost stripping, then a dark italic label that does not. Bytes captured
+  # live through Tern 0.5.3 (`tern capture --ansi`, PI_TUI_NATIVE=0). Read as
+  # typed text, it made every doorbell to a worker waiting on its subagent
+  # skip as `pending` until the subagent finished.
+  local esc=$'\033' status hint plural typed lookalike
+  status=' ⠇ 20s · ◔ Opus 5.5 · 🗑 fm-fm-omp-papercuts/lab · ⑂ main · ◫ 1.3%/1M ⟲ · S0.11'
+  hint="❯ ${esc}[0;38;2;229;229;231m                                                     ${esc}[0;38;2;0;180;255m←←${esc}[0;38;2;229;229;231m ${esc}[0;3;38;2;107;114;128mto see 1 running agent${esc}[m"
+  plural=${hint//1 running agent/2 running agents}
+  # Typing replaces the hint (verified live): the row then holds only the
+  # bright draft.
+  typed="❯ ${esc}[0;38;2;229;229;231mhello draft${esc}[m"
+  # Safety: the same words typed at normal brightness are real input.
+  lookalike="❯ ${esc}[0;38;2;229;229;231m←← to see 1 running agent${esc}[m"
+  assert_screen "omp running-agent hint" empty "$CAPS_STYLED_NOID" $'transcript\n\n'"$hint"$'\n'"$status"
+  assert_screen "omp running-agents hint (plural)" empty "$CAPS_STYLED_NOID" $'transcript\n\n'"$plural"$'\n'"$status"
+  assert_screen "typed omp draft beside a running subagent" pending "$CAPS_STYLED_NOID" $'transcript\n\n'"$typed"$'\n'"$status"
+  assert_screen "hint words typed at normal brightness" pending "$CAPS_STYLED_NOID" $'transcript\n\n'"$lookalike"$'\n'"$status"
+  # omp right-aligns the session title on its status row (captured live from a
+  # Tern worker, busy and idle, with a 1M context cell the `K` rule never
+  # matches). The title is status furniture, including the tail a terminal
+  # reflow pushes onto the next row after the tab narrows.
+  local titled_busy titled_idle
+  titled_busy=' ⠙ 53m · ◕ Opus 5.5 · 🌳 rigdeck/rigdeck · ⑂ fm/tern-mkgee-build *15 ?2 · ◫ 29.9%/1M ⟲ · S39.23 (+4.46)              Launch real windows for sign-in check'
+  titled_idle=' π · ◔ Opus 5.5 · 🌳 repo/wt · ⑂ detached · ◫ 1.5%/1M ⟲ · S0.06              Launch real windows for sign-in check'
+  assert_screen "busy titled omp status row" empty "$CAPS_STYLED_NOID" $'transcript\n\n❯\n'"$titled_busy"
+  assert_screen "idle titled omp status row" empty "$CAPS_STYLED_NOID" $'transcript\n\n❯\n'"$titled_idle"
+  assert_screen "hint above a titled status row" empty "$CAPS_STYLED_NOID" $'transcript\n\n'"$hint"$'\n'"$titled_busy"
+  assert_screen "reflowed title tail under the status row" empty "$CAPS_STYLED_NOID" \
+    $'transcript\n\n❯\n'"${titled_busy%%Launch*}"$'\nLaunch real windows for sign-in check'
+  pass "matrix: omp's running-agent hint and status-row title read empty; typed text beside them stays pending"
+}
+
 # codex_cell <grey> <glyph>: one codex 0.154 starfield cell exactly as the
 # harness draws it - a truecolor grey foreground, the composer's grey
 # background, the braille glyph, then a reset.
@@ -1030,6 +1065,7 @@ test_matrix_muse_truecolor_glyph_survives_signal_loss
 test_matrix_cursor_reverse_video_placeholder_remnant
 test_matrix_herdr_halfblock_rule_bounds_bare_wrap
 test_matrix_omp_status_row_bounds_bare_composer
+test_matrix_omp_running_agent_hint_is_idle
 test_matrix_codex_idle_starfield_furniture
 test_matrix_pi_separated_needs_identity
 test_matrix_pi_dollar_status_footer_is_empty

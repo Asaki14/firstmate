@@ -86,13 +86,14 @@
 #                                   tmux target or a herdr "<session>:<pane-id>"
 #                                   target; which one it's read as is decided by
 #                                   FM_SUPERVISOR_BACKEND (below), independently.
-#          FM_SUPERVISOR_BACKEND    supervisor pane BACKEND (tmux|herdr;
+#          FM_SUPERVISOR_BACKEND    supervisor pane BACKEND (tmux|herdr|tern;
 #                                   override; otherwise auto-discovered the same
 #                                   way bin/fm-backend.sh's fm_backend_detect
 #                                   resolves the runtime firstmate itself is
 #                                   executing inside - $TMUX_PANE selects tmux,
-#                                   $HERDR_ENV=1 selects herdr - falling back to
-#                                   tmux). zellij, orca, and cmux are not yet
+#                                   $HERDR_ENV=1 selects herdr, $TERN_PANE with
+#                                   TERM_PROGRAM=tern selects tern - falling back
+#                                   to tmux). zellij, orca, and cmux are not yet
 #                                   supported as supervisor backends; the daemon
 #                                   refuses loudly at startup rather than trying
 #                                   tmux primitives against a non-tmux pane.
@@ -209,8 +210,10 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # docs/herdr-backend.md and AGENTS.md section 4's
 # harness-verification discipline. Selecting one refuses loudly at startup
 # instead of silently running tmux primitives against a pane that is not a tmux
-# pane.
-FM_SUPERVISOR_SUPPORTED_BACKENDS="tmux herdr"
+# pane. tern's composer guard reads `tern capture`, so a supervisor harness that
+# renders Tern-natively (omp/pi without PI_TUI_NATIVE=0) reads `unknown` and is
+# never injected into (docs/tern-backend.md "Native rendering").
+FM_SUPERVISOR_SUPPORTED_BACKENDS="tmux herdr tern"
 INJECT_SKIP_DEFAULT="heartbeat"
 STALE_ESCALATE_SECS_DEFAULT=240
 ESCALATE_BATCH_SECS_DEFAULT=90
@@ -1803,6 +1806,8 @@ fm_super_main() {
       backend_source="TMUX_PANE"
     elif [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ]; then
       backend_source="HERDR_ENV"
+    elif [ -n "${TERN_PANE:-}" ] && [ "${TERM_PROGRAM:-}" = tern ]; then
+      backend_source="TERN_PANE"
     else
       backend_source="FALLBACK($FM_SUPERVISOR_BACKEND_DEFAULT)"
     fi
@@ -1837,6 +1842,8 @@ fm_super_main() {
       target_source="TMUX_PANE"
     elif [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ]; then
       target_source="HERDR_ENV(HERDR_PANE_ID)"
+    elif [ -n "${TERN_PANE:-}" ] && [ "${TERM_PROGRAM:-}" = tern ]; then
+      target_source="TERN_PANE"
     else
       target_source="FALLBACK(firstmate:0)"
     fi

@@ -31,7 +31,8 @@
     "docs/zellij-backend.md",
     "docs/orca-backend.md",
     "docs/cmux-backend.md",
-    "docs/remote-secondmates.md"
+    "docs/remote-secondmates.md",
+    "docs/tern-backend.md"
   ],
   "requiredOwnerPointers": [
     {
@@ -105,6 +106,10 @@
     {
       "source": "docs/trace-context.md",
       "target": "docs/verification/trace-context.md"
+    },
+    {
+      "source": "docs/tern-backend.md",
+      "target": "docs/verification/runtime-backends.md"
     }
   ],
   "surfaces": [
@@ -575,6 +580,10 @@
     {
       "path": ".agents/skills/validation-supervision/SKILL.md",
       "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/tern-backend.md",
+      "audience": "operator-current"
     }
   ]
 }

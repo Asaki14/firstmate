@@ -812,6 +812,7 @@ install_cmd() {
 manual_install_url() {
   case "$1" in
     herdr) echo "https://herdr.dev" ;;
+    tern) echo "https://docs.stencil.so/tern/" ;;
     cursor-agent) echo "https://cursor.com/cli" ;;
     *) return 1 ;;
   esac

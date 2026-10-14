@@ -2060,6 +2060,50 @@ FM_CMUX_CLAUDE_COMPOSER_LIVE=1 bin/fm-test-run.sh tests/fm-cmux-claude-composer-
 That guard still addresses the worker by task selector, so it no longer reaches the typed submit path and is not a current refresh entry point for this guarantee.
 The portable classifier regression is `tests/fm-backend-cmux.test.sh`.
 
+## Tern
+
+The current compatibility floor is Tern 0.4, and the active live evidence uses `tern 0.4.5 (1d14241)` on macOS arm64, verified on 2026-10-05 from a pane of the captain's running Tern.
+Every live check used only `zz-` sessions it created and killed afterwards.
+
+| Guarantee | Command shape | Result |
+| --- | --- | --- |
+| Create | `new session <name> --cwd <dir> --json`, `new tab <session> --cwd <dir> --json` | Returned `{session, tab, block}`; the session stayed `shown: false` and focus did not move. |
+| Unique sessions | `new session` with an existing name | `a session is already called \`<name>\``, exit 1. |
+| Name | `rename <block> fm-<id>` | Named the block's tab. |
+| Literal send | `send <block> text -- <text>` | Typed without submitting; option-shaped text stayed literal. |
+| Keys | `send <block> keys Enter|Escape|ctrl+c|ctrl+u` | Worked; tmux's `C-c` spelling exits 1. |
+| Viewport | `capture <block>` | 24 lines on an 80x24 hidden tab after 200 printed lines; `--scrollback` returned 203. |
+| Fresh block | `capture` before any output | Exit 0. |
+| cwd | `process <block> --json` | `foreground.cwd` followed the live foreground process. |
+| Close | `close <block>` on a running `sleep` | Ended it without confirmation; the emptied session remained with zero tabs. |
+| Absent block | any verb | `no block is called \`<id>\``, exit 1. |
+
+Native omp rendering hid the composer from `capture`, `capture --surfaces`, and `capture --ansi`; with `PI_TUI_NATIVE=0` the composer row `❯ pending draft text` was captured and the shared classifier read `pending`.
+omp 18.6.1's idle composer showed the right-aligned `⇧⇥ to change thinking effort` hint, whose bright keycap survived ghost stripping until the hint joined the shared idle-placeholder set; after that the live verdicts were idle `empty`, typed `pending`, cleared `empty`.
+On 2026-10-07 with `tern 0.5.3 (b7f1010)` and omp 18.6.1, a `PI_TUI_NATIVE=0` omp in a throwaway Tern session showed `←← to see 1 running agent` in the same slot, with the same bright keycap and dark italic label, while its subagent ran; the shared classifier read that row `pending` until the hint joined the idle-placeholder set, and after that the live verdicts were hint `empty`, typed `pending` (typing replaces the hint), cleared `empty`.
+
+The `firstmate-agents` plugin linked with `tern plugin link` and listed as `window  ready`.
+Its file listed a natively rendered omp primary as `working` and a typed `PI_TUI_NATIVE=0 omp` as `idle`.
+Tern lists an agent only while the typed command line names the harness (`env` and `VAR=` prefixes are stripped; `. file` and `sh -c` are not), and a `PI_TUI_NATIVE=0` omp dropped out of the agent list once a turn started, so Firstmate workers rely on their lifecycle record for busy state and the plugin colors their tabs from unseen alerts.
+
+On 2026-10-09 with `tern 0.6.2 (4b3ed42)` and omp 18.6.1, in a headless `tern serve` with its own `TERN_CONFIG_DIR` and the vertical tab list on, two `PI_TUI_NATIVE=0` omp panes ran the same short tool-using prompt while `ctl tree .nav-row` was sampled 200 times about 100 ms apart.
+The default omp's row title changed 68 times through 21 distinct spinner titles (`π ⠇ work-a`, `π ⠋ work-a`, ...); the one given `--config .omp/fm-tern-worker-overlay.yml` changed 3 times (`π: work-b`, then `π: done`, plus the focus suffix) and also finished the prompt.
+In the same serve with 30 `fm-*` tabs retitling every 0.12 s, a timed copy of `firstmate-agents` measured on Tern's UI thread a process spawn at 25-33 ms, `tern.json.encode` of 32 panes at 14 ms, `tern.fs.write` at 8 ms and `cx.session:panes()` usually at 1-2 ms; the pre-split poll logged `timer exceeded 50 ms`, and after the split one `panes()` call alone still stalled past 50 ms under that churn.
+
+End-to-end, `FM_BACKEND=tern FM_TERN_SESSION=zz-fmtern-live bin/fm-spawn.sh zztern1 <scratch-repo> --mode local-only --yolo off --harness omp --effort low` spawned `window=tern:zz-fmtern-live/846108557315` with `tern_session=` and `tern_block_id=` metadata in an unshown `fm-zztern1` tab, the omp worker answered its launch brief with `ok`, `fm_backend_agent_state` read `alive`, the composer read `empty`, `bin/fm-send.sh zztern1 <steer>` exited 0 and the worker moved `001.msg` to `handled/` and answered `steered`, and `bin/fm-teardown.sh zztern1` closed the tab and returned the worktree.
+
+On 2026-10-14 with `tern 0.8.3 (e2b8656)` and omp 18.10.4 on macOS arm64, an isolated Tern with its own `TERN_CONFIG_DIR`, `TERN_DAEMON_SOCKET`, and `tern --control` window passed all seven cases of `tests/fm-backend-tern-smoke.test.sh`.
+In a disposable home with an in-project Treehouse pool, `bin/fm-spawn.sh tern-w1 <scratch-repo> --scout --harness omp --effort low --backend tern` spawned `window=tern:firstmate-5568e1cd/1404454305794`, and the worker finished its brief.
+Two `bin/fm-send.sh tern-w1 <steer>` deliveries were acted on and moved to `handled/`; `fm_backend_agent_state` read `alive` and the composer `empty`.
+`fm_backend_busy_state` stayed `unknown` while the worker ran a tool, so the omp lifecycle record (`state=busy ... event=agent-start`, then `state=idle ... event=agent-end`) remained the busy authority.
+`bin/fm-teardown.sh tern-w1` reaped the worktree's leftover processes, closed the tab, and returned the pool slot.
+Task tabs need a shell whose login `PATH` finds `treehouse`: a daemon started with `SHELL=/opt/homebrew/bin/bash` opened `bash -l` tabs without `~/.local/bin`, and the spawn failed at `treehouse get: command not found`; the same daemon started with `SHELL=/opt/homebrew/bin/fish` spawned cleanly.
+
+```sh
+tests/fm-backend-tern.test.sh
+tests/fm-backend-tern-smoke.test.sh
+```
+
 ## Codex App host tools
 
 A reusable Desktop host-tool smoke ran on 2026-07-06 against Codex Desktop bundle version 26.623.101652, build 4674, bundle id `com.openai.codex`.

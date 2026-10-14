@@ -288,14 +288,20 @@ test_supported_backend_endpoint_records_validate() {
     "backend=cmux" "cmux_workspace_id=workspace-1" "cmux_surface_id=surface-2"
   fm_backend_validate_task_endpoint "$dir/home/state/$id.meta" "$id" || fail "valid cmux endpoint refused"
 
-  for backend in tmux herdr zellij orca cmux; do
+  id=tern-task
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=tern:firstmate-ab12cd34/42" "endpoint_task_id=$id" "worktree=$dir/worktree" "project=$dir/project" \
+    "backend=tern" "tern_session=firstmate-ab12cd34" "tern_block_id=42"
+  fm_backend_validate_task_endpoint "$dir/home/state/$id.meta" "$id" || fail "valid tern endpoint refused"
+
+  for backend in tmux herdr zellij orca cmux tern; do
     set +e
     fm_backend_kill "$backend" "" >/dev/null 2>&1
     target=$?
     set -e
     [ "$target" -ne 0 ] || fail "$backend generic kill accepted an empty target"
   done
-  pass "cleanup identity: valid tmux, Herdr, Zellij, Orca, and cmux records validate while every empty backend target refuses"
+  pass "cleanup identity: valid tmux, Herdr, Zellij, Orca, cmux, and Tern records validate while every empty backend target refuses"
 }
 
 test_orca_composite_worktree_id_validates() {

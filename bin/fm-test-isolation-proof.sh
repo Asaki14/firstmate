@@ -145,6 +145,9 @@ exclusion_reason() {
     fm-backend-cmux.test.sh|fm-backend-cmux-smoke.test.sh)
       printf '%s\n' 'cmux GUI backend; never parallel with another cmux mutator'
       ;;
+    fm-backend-tern.test.sh|fm-backend-tern-smoke.test.sh)
+      printf '%s\n' 'Tern GUI backend; never parallel with another Tern mutator'
+      ;;
     fm-backend-zellij.test.sh|fm-backend-zellij-smoke.test.sh)
       printf '%s\n' 'zellij optional backend; keep out of pure parallel pool'
       ;;
@@ -210,6 +213,7 @@ fm-wake-queue.test.sh
 fm-afk-inject-e2e.test.sh
 fm-backend-herdr-smoke.test.sh
 fm-backend-cmux-smoke.test.sh
+fm-backend-tern-smoke.test.sh
 fm-pi-primary-live-e2e.test.sh
 fm-quota-array-dispatch-live-e2e.test.sh
 EOF

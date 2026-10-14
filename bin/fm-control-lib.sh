@@ -279,7 +279,7 @@ fm_control_relaunch_resume_flag() {  # <harness> <registered-agent>
 fm_control_backend_supports_key() {  # <backend> <key>
   local backend=${1-} key=${2-}
   case "$backend" in
-    tmux|herdr|zellij|cmux)
+    tmux|herdr|zellij|cmux|tern)
       case "$key" in Escape|Enter|C-c|C-u) return 0 ;; esac
       ;;
     orca)
@@ -289,14 +289,14 @@ fm_control_backend_supports_key() {  # <backend> <key>
   return 1
 }
 
-# Whether <backend> has a recovery-grade agent-state classifier. Only tmux and
-# herdr implement fm_backend_agent_state; zellij, orca, and cmux report
+# Whether <backend> has a recovery-grade agent-state classifier. tmux, herdr,
+# and tern implement fm_backend_agent_state; zellij, orca, and cmux report
 # `unverified`, so no reading of theirs can prove an agent stopped. The control
 # plane refuses a stop-proving verb there instead of reporting an unprovable
 # transition as success.
 fm_control_backend_state_verified() {  # <backend>
   case "${1-}" in
-    tmux|herdr) return 0 ;;
+    tmux|herdr|tern) return 0 ;;
   esac
   return 1
 }
@@ -338,6 +338,9 @@ fm_control_backend_state_verified() {  # <backend>
 #     There is no read available here that closes that gap, so tmux always
 #     returns `unproven` and both verbs refuse. tmux is left exactly as
 #     deadlocked as it was before this change - no worse - but deliberately.
+#   tern CANNOT either. `tern ls` lists only the sessions of the Tern window
+#     this process addresses (--window, $TERN_WINDOW_KEY, else the first
+#     window), so a block absent from it may live on in another window.
 #
 # Both control-plane callers share this one implementation so the proof cannot
 # drift into two answers for the same endpoint.
@@ -348,6 +351,9 @@ fm_control_endpoint_absence_verdict() {  # <backend> <target>
   case "$backend" in
     tmux)
       printf 'unproven\ttmux absence cannot be proven from a task record: the record does not carry the endpoint'"'"'s socket identity, and a server-wide window inventory only describes the tmux server this process addresses, so a window absent from it may still be alive on another'
+      ;;
+    tern)
+      printf 'unproven\ttern absence cannot be proven from a task record: the Tern inventory only lists the sessions of the window this process addresses, so a block absent from it may still be alive in another window'
       ;;
     herdr)
       # Start the RECORDED session's server (only the server - nothing is

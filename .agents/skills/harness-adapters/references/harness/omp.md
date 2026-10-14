@@ -9,7 +9,7 @@ Cross-harness provider and credential identity is owned by `references/common/mo
 | Fact | Value |
 |---|---|
 | Binary | `omp`, a single Bun-compiled executable resolved from `PATH` by `../../../bin/fm-spawn.sh`; a missing binary refuses the spawn. |
-| Launch | Foreign markers cleared (`CLAUDECODE`, `PI_CODING_AGENT`, `GROK_AGENT`, `FM_PI_HARNESS`, `GEMINI_CLI`, Cursor's), `FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1`, then `omp --config <.omp/fm-worker-overlay.yml> --auto-approve --cwd <worktree> [--model] [--thinking] -e state/<id>.omp-ext.ts <one positional brief>`; a secondmate passes no `-e` and relies on auto-discovery. |
+| Launch | Foreign markers cleared (`CLAUDECODE`, `PI_CODING_AGENT`, `GROK_AGENT`, `FM_PI_HARNESS`, `GEMINI_CLI`, Cursor's), `FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1 ORT_DISABLE_TELEMETRY=1`, then `omp --config <.omp/fm-worker-overlay.yml> [--config <.omp/fm-tern-worker-overlay.yml> on Tern] --auto-approve --cwd <worktree> [--model] [--thinking] -e state/<id>.omp-ext.ts <one positional brief>`; a secondmate passes no `-e` and relies on auto-discovery. |
 | Busy state | `../../../bin/fm-busy-lib.sh` source `omp-ext`: the per-task extension marks busy at `agent_start` and idle at `agent_end` only when `willContinue` is not true; `ctx.isIdle()` is deliberately not consulted because it reads false at a natural TUI `agent_end` (`session_stop` is awaited before settle). |
 | Exit command | `/quit` (`/exit` and `/q` are aliases). |
 | Interrupt | Single Escape; the composer is left empty, no clear key. |
@@ -26,6 +26,7 @@ Cross-harness provider and credential identity is owned by `references/common/mo
 Keep the instructions as one positional argument; a second positional never surfaced as a submitted message.
 The openai-codex models reach an extension-registered tool through omp's `xd://` virtual-file bridge: the model reads `xd://fm_watch_arm_omp` for the description and writes `xd://fm_watch_arm_omp` to invoke it, so a transcript or rpc stream shows a `write` to that path rather than a direct `fm_watch_arm_omp` call; both are the same invocation (verified 18.1.11).
 omp cold start is roughly twenty seconds to the first agent turn, paid once per worker.
+`ORT_DISABLE_TELEMETRY=1` keeps an untracked `:memory:.ses` out of the worktree so cleanup is not refused; `../../../bin/fm-spawn.sh` owns the reason.
 
 ## Detection
 
@@ -37,6 +38,7 @@ The optional claude-bridge extension runs a nested executable literally named `c
 ## Worker posture overlay
 
 The captain's own `~/.omp/agent/config.yml` is never written; the tracked `.omp/fm-worker-overlay.yml` is passed with `--config` for the one session and pins only the settings whose captain-level values would park an unattended worker on a prompt, change its pinned model, or make its composer unreadable.
+On the Tern backend a second `--config`, `.omp/fm-tern-worker-overlay.yml`, also turns off omp's title spinner (`../../../docs/tern-backend.md` "Title churn").
 `../../../bin/fm-spawn.sh`'s header owns the exact list and the reason for each pin.
 
 ## Extension loading

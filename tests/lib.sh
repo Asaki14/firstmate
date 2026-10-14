@@ -68,6 +68,12 @@ unset FM_TASK_ID
 # against an ambient override sets TASKS_AXI_FILE itself.
 unset TASKS_AXI_FILE TASKS_AXI_BACKEND
 
+# Clear the Tern pane marker. A suite run from a Tern pane would otherwise
+# auto-detect the tern backend (and a Tern supervisor pane) wherever it expects
+# the no-marker tmux fallback; cases that exercise Tern set TERN_PANE themselves
+# (tests/fm-backend-tern.test.sh).
+unset TERN_PANE
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034
