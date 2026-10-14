@@ -2092,6 +2092,13 @@ In the same serve with 30 `fm-*` tabs retitling every 0.12 s, a timed copy of `f
 
 End-to-end, `FM_BACKEND=tern FM_TERN_SESSION=zz-fmtern-live bin/fm-spawn.sh zztern1 <scratch-repo> --mode local-only --yolo off --harness omp --effort low` spawned `window=tern:zz-fmtern-live/846108557315` with `tern_session=` and `tern_block_id=` metadata in an unshown `fm-zztern1` tab, the omp worker answered its launch brief with `ok`, `fm_backend_agent_state` read `alive`, the composer read `empty`, `bin/fm-send.sh zztern1 <steer>` exited 0 and the worker moved `001.msg` to `handled/` and answered `steered`, and `bin/fm-teardown.sh zztern1` closed the tab and returned the worktree.
 
+On 2026-10-14 with `tern 0.8.3 (e2b8656)` and omp 18.10.4 on macOS arm64, an isolated Tern with its own `TERN_CONFIG_DIR`, `TERN_DAEMON_SOCKET`, and `tern --control` window passed all seven cases of `tests/fm-backend-tern-smoke.test.sh`.
+In a disposable home with an in-project Treehouse pool, `bin/fm-spawn.sh tern-w1 <scratch-repo> --scout --harness omp --effort low --backend tern` spawned `window=tern:firstmate-5568e1cd/1404454305794`, and the worker finished its brief.
+Two `bin/fm-send.sh tern-w1 <steer>` deliveries were acted on and moved to `handled/`; `fm_backend_agent_state` read `alive` and the composer `empty`.
+`fm_backend_busy_state` stayed `unknown` while the worker ran a tool, so the omp lifecycle record (`state=busy ... event=agent-start`, then `state=idle ... event=agent-end`) remained the busy authority.
+`bin/fm-teardown.sh tern-w1` reaped the worktree's leftover processes, closed the tab, and returned the pool slot.
+Task tabs need a shell whose login `PATH` finds `treehouse`: a daemon started with `SHELL=/opt/homebrew/bin/bash` opened `bash -l` tabs without `~/.local/bin`, and the spawn failed at `treehouse get: command not found`; the same daemon started with `SHELL=/opt/homebrew/bin/fish` spawned cleanly.
+
 ```sh
 tests/fm-backend-tern.test.sh
 tests/fm-backend-tern-smoke.test.sh
