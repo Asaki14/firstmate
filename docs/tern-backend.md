@@ -1,6 +1,6 @@
 # Tern runtime backend
 
-Tern is Stencil's multiplexing terminal, and Firstmate's experimental `tern` backend runs each task in a tab of it.
+Tern is Stencil's multiplexing terminal, and Firstmate's experimental `tern` backend runs each task in a tab of it, or optionally in a pane of the launching agent's own tab.
 Tern provides task sessions, tabs, and blocks while Treehouse continues to provide git worktrees.
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns shared selection and metadata semantics.
 
@@ -100,7 +100,27 @@ tern_block_id=<block-id>
 ```
 
 The literal `tern:` prefix and the `/` keep the target from reading as a tmux `session:window` or a Herdr `session:wX:pY` in `fm-send.sh`'s explicit-target heuristic.
-Operations verify that the recorded block still sits in a tab named `fm-<id>` in the recorded session; when the block is gone, the label recovers the task's current block, and a block now in another task's tab is never touched.
+Operations verify that the recorded block still carries the `fm-<id>` label in the recorded session, which for this topology is its tab's name; when the block is gone, the label recovers the task's current block, and a block now in another task's tab is never touched.
+
+## Crew placement
+
+A crewmate or scout gets its own task tab by default, and can instead be a pane split off inside the launching agent's own tab, with the same shape as [Herdr's crew placement](herdr-backend.md#crew-placement).
+A home selects that with local gitignored `config/tern-crew-placement`: an absent file or `tab` keeps the topology above, and `pane` splits the Firstmate or secondmate pane that launched the worker.
+Values are compared with whitespace stripped and case ignored, and an empty or unrecognized value refuses the spawn.
+The setting is inherited into secondmate homes, so a secondmate's own crewmates split that secondmate agent's pane.
+
+Pane placement trusts `TERN_PANE` only after verifying it: the block must be live in this window's `tern ls --json`, and its child process from `tern process` must be an ancestor of the spawning process.
+A spawn that is not running in a Tern pane, or whose claim fails either check, refuses before anything is created and never falls back to a tab.
+
+The launcher keeps the left half of its tab.
+The first worker splits the launcher pane to the right, and every later worker splits the bottom-most other pane of the tab downward, read off the tab's own split tree, so after a teardown the next worker goes under the lowest survivor.
+The new block must be the only block that joined the launcher's tab and must read back with its label, or it is closed again and the spawn refuses.
+
+Tern 0.8.3 names tabs but not panes, so a pane-placed worker is labeled through its launch command, which Tern keeps in the block's `args`: `/usr/bin/env FM_TERN_HOME=<home session> FM_TERN_LABEL=fm-<id> $SHELL -l`.
+`FM_TERN_HOME` scopes the label to one home, because several homes' launchers can share one Tern session.
+The recorded `tern_session` is the launcher's session, with every byte outside `A-Za-z0-9._-` written as `%XX` so a session such as `First Mate` records as `First%20Mate`; every operation, list-live discovery, and label recovery reads this label for a pane-placed worker and the tab name for a tab-placed one.
+A tab name counts only inside this home's own session, so the launcher's pane never carries a task label.
+Teardown closes only the worker's block; its split collapses onto its sibling and the launcher and its tab stay.
 
 ## Native rendering
 
@@ -138,7 +158,8 @@ Real tests act on the captain's running Tern: `tests/fm-backend-tern-smoke.test.
 
 - Tern is experimental and needs the app with a window open; the backend never launches or quits it.
 - Tern commands act on one window's sessions (`--window`, `$TERN_WINDOW_KEY`, else the first window), so with several windows a task moved to another window reads `missing`, and absence is never treated as proven for relaunch.
-- Secondmate spawns are unsupported until a per-home lifecycle on Tern is verified.
+- Secondmate spawns are unsupported until a per-home lifecycle on Tern is verified, whatever `config/tern-crew-placement` says.
+- Pane-placed workers get no state colour: the plugin colours `fm-*` tabs, and Tern 0.8.3's plugin API colours tabs but not panes.
 - There is no push-event stream; the watcher polls.
 - Native agent state reaches Firstmate only through the plugin, and only for panes Tern lists as agents.
 - The away-mode daemon accepts a Tern supervisor pane, but a natively rendering primary's composer reads `unknown`, so the daemon never injects into it; the omp primary uses its own supervision session instead.

@@ -2099,6 +2099,26 @@ Two `bin/fm-send.sh tern-w1 <steer>` deliveries were acted on and moved to `hand
 `bin/fm-teardown.sh tern-w1` reaped the worktree's leftover processes, closed the tab, and returned the pool slot.
 Task tabs need a shell whose login `PATH` finds `treehouse`: a daemon started with `SHELL=/opt/homebrew/bin/bash` opened `bash -l` tabs without `~/.local/bin`, and the spawn failed at `treehouse get: command not found`; the same daemon started with `SHELL=/opt/homebrew/bin/fish` spawned cleanly.
 
+### Pane crew placement
+
+On 2026-10-14 with `tern 0.8.3 (e2b8656)` and omp 18.10.4 on macOS arm64, pane placement ran against an isolated Tern: its own `TERN_CONFIG_DIR` and `TERN_DAEMON_SOCKET`, its own `tern --control` window, and every inherited `TERN_*` variable unset before the first call.
+The disposable home held `config/backend=tern` and `config/tern-crew-placement=pane`.
+
+| Guarantee | Command shape | Result |
+| --- | --- | --- |
+| Split | `split <block> right` or `down`, with `--cwd <dir> --json -- <command>` | Returned `{session, tab, block}`; focus stayed on the split block. |
+| Launch label | the same split with `-- /usr/bin/env FM_TERN_HOME=<home> FM_TERN_LABEL=fm-<id> /bin/zsh -l` | `ls --json` kept it as `args: ["-l","-c","/usr/bin/env FM_TERN_HOME=... FM_TERN_LABEL=fm-<id> /bin/zsh -l"]`; the pane title was empty. |
+| Layout | `ls --json` `splits` | `Row` holds side-by-side children, `Column` stacked ones, each with `a`, `b`, and `ratio`. |
+| Launcher identity | `env` in a pane, `whoami --json` | `TERN_PANE=<block>` and `TERN_PANE_SOCKET=<daemon socket>`; `whoami` reports only identity hops, not the pane. |
+| Outside a pane | `bin/fm-spawn.sh` from a shell with no `TERN_PANE` | `error: config/tern-crew-placement=pane needs the launching agent's own Tern pane to split, but this process is not running inside one`, nothing created. |
+| Inherited claim | the same with `TERN_PANE=5` from a shell outside pane 5 | `error: this process does not run inside the Tern pane 5 that TERN_PANE claims`, nothing created. |
+
+Run from launcher pane 5, `bin/fm-spawn.sh liveA <scratch-repo> --harness omp --scout --backend tern` spawned `window=tern:Default/115964116993` and `liveB` spawned `window=tern:Default/326417514497`, with `tern_session=Default`.
+The tab read `Row(a: 5, b: Column(a: liveA, b: liveB))`, a third worker `liveC` split `liveB` down, and both omp workers answered their brief.
+`fm_backend_tern_list_live` listed `fm-liveA` and `fm-liveB`, `fm_backend_agent_state` read both `alive` and the launcher `dead`, and the launcher never matched a task label.
+`bin/fm-send.sh liveA <steer>` exited 0 and the worker answered `pong`.
+`bin/fm-teardown.sh liveC` closed only `liveC`'s pane and returned its worktree, leaving `Row(a: 5, b: Column(a: liveA, b: liveB))`; `fm_backend_kill` on `liveA`, the endpoint step of teardown, left `Row(a: 5, b: liveB)` with `liveB` live.
+
 ```sh
 tests/fm-backend-tern.test.sh
 tests/fm-backend-tern-smoke.test.sh

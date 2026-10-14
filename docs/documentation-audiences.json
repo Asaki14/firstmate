@@ -274,6 +274,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": "CHANGELOG.md",
+      "audience": "public-product"
+    },
+    {
       "path": "CLAUDE.md",
       "audience": "agent-runtime"
     },

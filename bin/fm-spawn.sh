@@ -118,7 +118,11 @@
 #   spawns yet. A tern task pane gets PI_TUI_NATIVE=0 exported before launch so
 #   pi and omp draw a capturable terminal UI instead of Tern-native surfaces,
 #   and an omp worker there also gets .omp/fm-tern-worker-overlay.yml, which
-#   stops its title spinner (docs/tern-backend.md).
+#   stops its title spinner (docs/tern-backend.md). The local
+#   config/tern-crew-placement file selects a tern endpoint's shape like the
+#   herdr one below: "pane" splits the launching agent's own verified Tern pane,
+#   and a missing or unverifiable launcher pane or an unrecognized value refuses
+#   the spawn rather than falling back to a tab.
 #   A backend spawn refusal (missing dependency, version gate, unauthenticated
 #   socket, or unsupported secondmate mode) is terminal for that selected backend;
 #   callers must surface it instead of silently retrying another backend.
@@ -1776,6 +1780,32 @@ if [ "$RELAUNCH" -eq 0 ]; then
   if [ "$BACKEND" = tern ] && [ "$KIND" = secondmate ]; then
     echo "error: backend=tern does not support --secondmate spawns yet" >&2
     exit 1
+  fi
+  # config/tern-crew-placement picks the endpoint shape (docs/tern-backend.md
+  # "Crew placement"). Pane placement must verify the launcher's own Tern
+  # pane here, before any endpoint or worktree exists, and never falls back
+  # to a tab.
+  TERN_CREW_PLACEMENT=tab
+  if [ "$BACKEND" = tern ]; then
+    set +e
+    TERN_CREW_PLACEMENT=$(fm_backend_tern_crew_placement "$CONFIG")
+    TERN_PLACEMENT_STATUS=$?
+    set -e
+    [ "$TERN_PLACEMENT_STATUS" -eq 0 ] || exit 1
+    if [ "$TERN_CREW_PLACEMENT" = pane ]; then
+      set +e
+      fm_backend_tern_launcher_identity
+      TERN_LAUNCHER_STATUS=$?
+      set -e
+      case "$TERN_LAUNCHER_STATUS" in
+        0) ;;
+        2)
+          echo "error: config/tern-crew-placement=pane needs the launching agent's own Tern pane to split, but this process is not running inside one; run firstmate inside Tern or set that file to \"tab\"" >&2
+          exit 1
+          ;;
+        *) exit 1 ;;
+      esac
+    fi
   fi
   if [ "$BACKEND" = orca ]; then
     fm_backend_orca_runtime_check || exit 1
@@ -4095,7 +4125,11 @@ EOF
     ;;
   tern)
     fm_backend_tern_container_ensure >/dev/null || exit 1
-    TERN_TASK_IDS=$(fm_backend_tern_create_task "$W" "$PROJ_ABS") || exit 1
+    if [ "$TERN_CREW_PLACEMENT" = pane ]; then
+      TERN_TASK_IDS=$(fm_backend_tern_split_task "$W" "$PROJ_ABS") || exit 1
+    else
+      TERN_TASK_IDS=$(fm_backend_tern_create_task "$W" "$PROJ_ABS") || exit 1
+    fi
     read -r TERN_SES TERN_BLOCK_ID <<EOF
 $TERN_TASK_IDS
 EOF

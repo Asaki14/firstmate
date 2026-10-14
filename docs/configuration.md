@@ -508,7 +508,8 @@ Legacy tmux metadata remains cleanup-compatible when its exact window name is `f
 
 The local `config/herdr-presentation-spaces` file instead opts a home out of, or explicitly in to, Herdr's default-on disposable single-task visual projection; [Presentation spaces](herdr-backend.md#presentation-spaces) owns its accepted values, default, Herdr version floor, migration, behavior, safety limits, recovery contract, and narrow locked session-start cleanup of exact restored idle-shell children.
 The local `config/herdr-crew-placement` file selects the shape of a Herdr worker endpoint: absent or `tab` keeps one task tab per worker, and `pane` splits the launching agent's own pane so the worker appears inside that agent's own tab; [Crew placement](herdr-backend.md#crew-placement) owns its accepted values, refusals, mutual exclusion with the projection, and cleanup argument.
-Both settings are inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
+The local `config/tern-crew-placement` file selects the same two shapes for a Tern worker endpoint; [Crew placement](tern-backend.md#crew-placement) owns its accepted values, refusals, and limits.
+All three settings are inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
 For normal herdr operations, `HERDR_SESSION` selects the named session, but destructive test cleanup must not rely on `HERDR_SESSION` alone.
 Use the explicit guarded cleanup path described in [`docs/herdr-backend.md`](herdr-backend.md) instead of `herdr server stop`.
 

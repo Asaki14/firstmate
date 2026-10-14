@@ -50,13 +50,13 @@ case "${1:-}" in
       fi
       out=$(jq --arg n "$name" --arg c "$cwd" '
         .next as $i | .next += 3
-        | .sessions += [{id: $i, name: $n, shown: false, tabs: [{id: ($i+1), name: null, blocks: [{id: ($i+2), cwd: $c, program: "/bin/zsh", live: true, exited: null}]}]}]
+        | .sessions += [{id: $i, name: $n, shown: false, tabs: [{id: ($i+1), name: null, blocks: [{id: ($i+2), cwd: $c, program: "/bin/zsh", live: true, exited: null}], splits: {Leaf: ($i+2)}}]}]
         | {state: ., created: {session: $i, tab: ($i+1), block: ($i+2)}}' "$S")
     else
       jq -e --arg n "$name" 'any(.sessions[]; .name == $n)' "$S" >/dev/null || { echo "tern new: no session is called \`$name\`" >&2; exit 1; }
       out=$(jq --arg n "$name" --arg c "$cwd" '
         .next as $i | .next += 2
-        | (.sessions[] | select(.name == $n) | .tabs) += [{id: $i, name: null, blocks: [{id: ($i+1), cwd: $c, program: "/bin/zsh", live: true, exited: null}]}]
+        | (.sessions[] | select(.name == $n) | .tabs) += [{id: $i, name: null, blocks: [{id: ($i+1), cwd: $c, program: "/bin/zsh", live: true, exited: null}], splits: {Leaf: ($i+1)}}]
         | {state: ., created: {session: (.sessions[] | select(.name == $n) | .id), tab: $i, block: ($i+1)}}' "$S")
     fi
     save "$(printf '%s' "$out" | jq '.state')"
@@ -81,10 +81,40 @@ case "${1:-}" in
       printf '{"pane":%s,"child":{"pid":999991,"name":"zsh","argv":["/bin/zsh","-l"],"cwd":"/w"},"group":999991,"foreground":{"pid":999991,"name":"zsh","argv":["/bin/zsh","-l"],"cwd":"/w"}}' "$2"
     fi
     exit 0 ;;
+  split)
+    # tern split BLOCK right|down [--cwd DIR] [--json] [-- COMMAND...]: Tern
+    # runs COMMAND as `<shell> -l -c "<COMMAND joined>"` and keeps those args.
+    has_block "$2" || no_block split "$2"
+    target=$2; dir=$3; shift 3; cwd=; cmd=
+    while [ $# -gt 0 ]; do
+      case "$1" in --cwd) cwd=$2; shift 2 ;; --json) shift ;; --) shift; cmd="$*"; break ;; *) shift ;; esac
+    done
+    axis=Row; [ "$dir" = down ] && axis=Column
+    out=$(jq --arg t "$target" --arg c "$cwd" --arg cmd "$cmd" --arg axis "$axis" --arg extra "${FM_TERN_FAKE_SPLIT_EXTRA:-}" '
+      def repl($b; $new): if has("Leaf") then (if (.Leaf | tostring) == $b then $new else . end)
+        else (.Split.a |= repl($b; $new)) | (.Split.b |= repl($b; $new)) end;
+      def blk($id): {id: $id, cwd: $c, program: "/bin/zsh", args: (if $cmd == "" then ["-l"] else ["-l", "-c", $cmd] end), live: true, exited: null};
+      .next as $i | .next += 3
+      | (.sessions[].tabs[] | select(any(.blocks[]; (.id | tostring) == $t)))
+        |= (.blocks += [blk($i)] + (if $extra == "" then [] else [blk($i + 1) | .args = ["-l"]] end)
+            | .splits |= repl($t; {Split: {id: ($i + 2), axis: $axis, ratio: 0.5, a: {Leaf: ($t | tonumber)}, b: {Leaf: $i}}}))
+      | {state: ., created: {session: (first(.sessions[] | select(any(.tabs[].blocks[]; (.id | tostring) == $t))) | .id), block: $i}}' "$S")
+    save "$(printf '%s' "$out" | jq '.state')"
+    printf '%s' "$out" | jq '.created'
+    exit 0 ;;
   close)
     has_block "$2" || no_block close "$2"
     [ -z "${FM_TERN_FAKE_CLOSE_FAIL:-}" ] || { echo "tern close: refused" >&2; exit 1; }
-    save "$(jq --arg b "$2" '.sessions[].tabs |= map(select(all(.blocks[]; (.id|tostring) != $b)))' "$S")"
+    # Only the block closes: its split collapses onto its sibling, and a tab
+    # closes once its last block is gone.
+    save "$(jq --arg b "$2" '
+      def isb: has("Leaf") and ((.Leaf | tostring) == $b);
+      def drop: if has("Split") then
+          (if (.Split.a | isb) then (.Split.b | drop) elif (.Split.b | isb) then (.Split.a | drop)
+           else (.Split.a |= drop) | (.Split.b |= drop) end)
+        else . end;
+      .sessions[].tabs |= map(.blocks |= map(select((.id | tostring) != $b)) | select(.blocks | length > 0)
+        | if .splits then .splits |= drop else . end)' "$S")"
     exit 0 ;;
   plugin)
     [ "${2:-}" = dir ] && { printf '%s\n' "$W/plugins"; exit 0; }
@@ -184,13 +214,17 @@ test_parse_target() {
   [ "$FM_BACKEND_TERN_SESSION" = firstmate-1a2b ] && [ "$FM_BACKEND_TERN_BLOCK" = 123 ] || fail "target fields wrong"
   fm_backend_tern_parse_target 'tern:/11' || fail "the unscoped supervisor form must parse"
   [ -z "$FM_BACKEND_TERN_SESSION" ] && [ "$FM_BACKEND_TERN_BLOCK" = 11 ] || fail "unscoped fields wrong"
+  [ "$(fm_backend_tern_session_encode 'First Mate')" = First%20Mate ] || fail "a session name with a space must encode"
+  fm_backend_tern_parse_target "tern:$(fm_backend_tern_session_encode 'Fü %x/y')/7" || fail "an encoded session target must parse"
+  [ "$FM_BACKEND_TERN_SESSION" = 'Fü %x/y' ] || fail "the session must decode back exactly, got '$FM_BACKEND_TERN_SESSION'"
+  fm_backend_endpoint_atom_valid "$(fm_backend_tern_session_encode 'Fü %x/y')" || fail "an encoded session must be a valid metadata atom"
   local bad
-  for bad in 'firstmate:fm-x' 'default:w1:p2' 'tern:s/abc' 'tern:s/' 'tern:a/b/1' '11'; do
+  for bad in 'firstmate:fm-x' 'default:w1:p2' 'tern:s/abc' 'tern:s/' 'tern:a/b/1' '11' 'tern:a%2/1' 'tern:a%zz/1' 'tern:a\n/1'; do
     if fm_backend_tern_parse_target "$bad"; then
       fail "target '$bad' must not parse as a Tern target"
     fi
   done
-  pass "parse_target: accepts tern:<session>/<block> and tern:/<block>, rejects tmux/herdr shapes and junk"
+  pass "parse_target: accepts tern:<session>/<block> and tern:/<block>, decodes an encoded session, rejects tmux/herdr shapes and junk"
 }
 
 test_target_ready_checks_label_and_recovers() {
@@ -344,6 +378,202 @@ test_list_live_lists_home_task_tabs() {
   out=$(fm_backend_tern_list_live | cut -f2 | sort | tr '\n' ' ')
   [ "$out" = "fm-a fm-b " ] || fail "list_live should list only this home's task tabs, got '$out'"
   pass "list_live: only fm-* tabs of this home's session"
+}
+
+# --- pane placement ------------------------------------------------------------
+
+# add_launcher <session>: a session whose one tab holds the launching agent's
+# pane, block 3, whose process is this test shell, so the launcher identity's
+# ancestry walk reaches it from this shell and from any child it starts.
+add_launcher() {
+  jq --arg s "$1" '.sessions += [{id: 1, name: $s, tabs: [{id: 2, name: "First Mate", blocks: [{id: 3, cwd: "/fm", program: "/bin/zsh", args: ["-l"], live: true, exited: null}], splits: {Leaf: 3}}]}]' \
+    "$W/state.json" >"$W/s2" && mv "$W/s2" "$W/state.json"
+  printf '{"pane":3,"child":{"pid":%s,"name":"bash","argv":["bash"],"cwd":"/fm"},"group":%s,"foreground":{"pid":%s,"name":"bash","argv":["bash"],"cwd":"/fm"}}' \
+    "$$" "$$" "$$" >"$W/process/3"
+}
+
+launcher_tab_json() {  # the launcher's tab in the fake inventory
+  jq -c '.sessions[] | select(.name == "Default") | .tabs[] | select(any(.blocks[]; .id == 3))' "$W/state.json"
+}
+
+# split_worker <label>: a pane-placed worker; echoes its block id.
+split_worker() {
+  local out
+  out=$(fm_backend_tern_split_task "$1" /work) || return 1
+  printf '%s' "${out#* }"
+}
+
+test_crew_placement_config_selects_a_placement_or_refuses() {
+  local config="$TMP_ROOT/crew-placement/config" got status
+  mkdir -p "$config"
+  [ "$(fm_backend_tern_crew_placement "$config")" = tab ] || fail "an absent file must keep the tab placement"
+  printf 'tab\n' >"$config/tern-crew-placement"
+  [ "$(fm_backend_tern_crew_placement "$config")" = tab ] || fail "an explicit tab must report tab"
+  printf '  PANE \n' >"$config/tern-crew-placement"
+  [ "$(fm_backend_tern_crew_placement "$config")" = pane ] || fail "the value must be read case-folded and whitespace-stripped"
+  printf 'panes\n' >"$config/tern-crew-placement"
+  got=$(fm_backend_tern_crew_placement "$config" 2>&1)
+  status=$?
+  [ "$status" -eq 3 ] || fail "an unrecognized placement must be an actionable error, got status $status"
+  assert_contains "$got" 'unrecognized value' "the placement error did not name the rejected value"
+  : >"$config/tern-crew-placement"
+  fm_backend_tern_crew_placement "$config" >/dev/null 2>&1
+  status=$?
+  [ "$status" -eq 3 ] || fail "an empty placement file must refuse, got $status"
+  pass "crew_placement: absent/tab is tab, pane is pane, anything else refuses"
+}
+
+test_launcher_identity_is_verified_not_trusted() {
+  local status err
+  make_tern_world launcher
+  add_launcher Default
+  (unset TERN_PANE; fm_backend_tern_launcher_identity 2>/dev/null)
+  status=$?
+  [ "$status" -eq 2 ] || fail "no TERN_PANE must report 'not in a Tern pane' (2), got $status"
+  TERN_PANE=abc fm_backend_tern_launcher_identity 2>/dev/null && fail "a non-numeric TERN_PANE must refuse"
+  TERN_PANE=77 fm_backend_tern_launcher_identity 2>/dev/null && fail "a TERN_PANE this window does not list must refuse"
+  printf '{"pane":3,"child":{"pid":999991,"name":"zsh","argv":["zsh"],"cwd":"/fm"},"group":999991,"foreground":{"pid":999991,"name":"zsh","argv":["zsh"],"cwd":"/fm"}}' >"$W/process/3"
+  err=$(TERN_PANE=3 fm_backend_tern_launcher_identity 2>&1) && fail "a pane whose process is not this process's ancestor must refuse"
+  assert_contains "$err" "does not run inside the Tern pane 3" "the inherited-identity refusal must say why"
+  printf '{"pane":3,"child":{"pid":%s,"name":"bash","argv":["bash"],"cwd":"/fm"},"group":%s,"foreground":{"pid":%s,"name":"bash","argv":["bash"],"cwd":"/fm"}}' \
+    "$$" "$$" "$$" >"$W/process/3"
+  TERN_PANE=3 fm_backend_tern_launcher_identity || fail "the verified launcher pane must be accepted"
+  [ "$FM_BACKEND_TERN_LAUNCHER_BLOCK $FM_BACKEND_TERN_LAUNCHER_SESSION" = "3 Default" ] \
+    || fail "the launcher identity must name block 3 in session Default, got '$FM_BACKEND_TERN_LAUNCHER_BLOCK $FM_BACKEND_TERN_LAUNCHER_SESSION'"
+  set_block_live 3 false
+  TERN_PANE=3 fm_backend_tern_launcher_identity 2>/dev/null && fail "an exited launcher pane must refuse"
+  pass "launcher_identity: needs TERN_PANE naming a live listed block whose process is an ancestor of this process"
+}
+
+test_split_task_stacks_workers_right_of_the_launcher() {
+  local a b c tab out
+  make_tern_world split
+  add_launcher Default
+  TERN_PANE=3 fm_backend_tern_launcher_identity || fail "launcher identity failed"
+  out=$(fm_backend_tern_split_task fm-a /work) || fail "the first pane split failed"
+  [ "${out% *}" = Default ] || fail "a pane-placed worker lives in the launcher's session, got '$out'"
+  a=${out#* }
+  grep -q "^tern${US}split${US}3${US}right${US}" "$TERN_LOG" || fail "the first worker must split the launcher to the right"
+  b=$(split_worker fm-b) || fail "the second pane split failed"
+  grep -q "^tern${US}split${US}$a${US}down${US}" "$TERN_LOG" || fail "the second worker must split the first worker down"
+  c=$(split_worker fm-c) || fail "the third pane split failed"
+  grep -q "^tern${US}split${US}$b${US}down${US}" "$TERN_LOG" || fail "the third worker must split the bottom-most worker down"
+  tab=$(launcher_tab_json)
+  printf '%s' "$tab" | jq -e --argjson a "$a" --argjson b "$b" --argjson c "$c" '
+    .splits.Split as $r | $r.axis == "Row" and $r.a.Leaf == 3
+    and $r.b.Split.axis == "Column" and $r.b.Split.a.Leaf == $a
+    and $r.b.Split.b.Split.axis == "Column" and $r.b.Split.b.Split.a.Leaf == $b and $r.b.Split.b.Split.b.Leaf == $c' >/dev/null \
+    || fail "the launcher must keep the left half with workers stacked top to bottom on the right, got $tab"
+  [ "$(tern_calls new)" = 0 ] || fail "pane placement must never create a session or tab"
+  grep -q "FM_TERN_HOME=zz-fm-unit${US}FM_TERN_LABEL=fm-b${US}" "$TERN_LOG" || fail "the split must label the block through its launch command"
+  fm_backend_tern_target_ready "tern:Default/$b" fm-b || fail "a pane-placed worker must be ready under its own label"
+  fm_backend_tern_target_ready "tern:Default/$b" fm-a && fail "a pane-placed worker must not answer another task's label"
+  fm_backend_tern_target_ready "tern:Default/3" fm-a && fail "the launcher pane must never carry a task label"
+  fm_backend_tern_target_ready "tern:Default/99999" fm-c || fail "label recovery must find a pane-placed worker"
+  [ "$FM_BACKEND_TERN_BLOCK" = "$c" ] || fail "label recovery adopted the wrong block"
+  out=$(fm_backend_tern_list_live | sort | tr '\t\n' '= ')
+  [ "$out" = "tern:Default/$a=fm-a tern:Default/$b=fm-b tern:Default/$c=fm-c " ] || fail "list_live must find this home's pane-placed workers, got '$out'"
+  out=$(FM_TERN_SESSION=zz-other fm_backend_tern_list_live)
+  [ -z "$out" ] || fail "another home sharing the session must not list these workers, got '$out'"
+  FM_TERN_SESSION=zz-other fm_backend_tern_target_ready "tern:Default/$a" fm-a && fail "another home's same label must not match"
+  pass "split_task: first worker right of the launcher, later ones stacked under the bottom-most, labeled per home"
+}
+
+test_split_task_in_a_named_session_records_an_encoded_endpoint() {
+  local out s b meta="$TMP_ROOT/first-mate.meta"
+  make_tern_world split-first-mate
+  add_launcher 'First Mate'
+  TERN_PANE=3 fm_backend_tern_launcher_identity || fail "launcher identity failed"
+  out=$(fm_backend_tern_split_task fm-a /work) || fail "the split failed"
+  read -r s b <<<"$out"
+  [ "$s" = First%20Mate ] || fail "the launcher's session must be recorded encoded, got '$s'"
+  fm_backend_tern_target_ready "tern:$s/$b" fm-a || fail "the encoded endpoint must resolve to the worker"
+  fm_backend_tern_target_ready "tern:$s/99999" fm-a || fail "label recovery must work in the decoded session"
+  printf 'window=tern:%s/%s\nendpoint_task_id=a\nworktree=/w\nproject=/p\nbackend=tern\ntern_session=%s\ntern_block_id=%s\n' "$s" "$b" "$s" "$b" >"$meta"
+  fm_backend_validate_task_endpoint "$meta" a 2>/dev/null || fail "the encoded endpoint must pass task-endpoint validation"
+  [ "$(fm_backend_tern_list_live | cut -f1)" = "tern:$s/$b" ] || fail "list_live must report the encoded endpoint"
+  pass "split_task: a launcher session named 'First Mate' records the endpoint as tern:First%20Mate/<block>"
+}
+
+test_pane_teardown_closes_only_the_worker_pane() {
+  local a b c d tab
+  make_tern_world pane-kill
+  add_launcher Default
+  TERN_PANE=3 fm_backend_tern_launcher_identity || fail "launcher identity failed"
+  a=$(split_worker fm-a) || fail "pane split fm-a failed"
+  b=$(split_worker fm-b) || fail "pane split fm-b failed"
+  c=$(split_worker fm-c) || fail "pane split fm-c failed"
+  fm_backend_kill tern "tern:Default/$b" "" fm-b || fail "kill of a pane-placed worker failed"
+  [ "$(tern_calls close)" = 1 ] || fail "kill must close exactly one block"
+  tab=$(launcher_tab_json)
+  [ "$(printf '%s' "$tab" | jq -c '[.blocks[].id] | sort')" = "$(printf '[3,%s,%s]' "$a" "$c" | jq -c 'sort')" ] \
+    || fail "only the worker's pane may close; the launcher, its tab and the other workers stay, got $tab"
+  fm_backend_kill tern "tern:Default/3" "" fm-a || fail "a launcher target under a worker's label means that worker is gone"
+  [ "$(tern_calls close)" = 1 ] || fail "kill must never close the launcher pane"
+  d=$(split_worker fm-d) || fail "a split after teardown failed"
+  grep -q "^tern${US}split${US}$c${US}down${US}" "$TERN_LOG" || fail "after teardown the next worker goes under the bottom-most survivor"
+  fm_backend_kill tern "tern:Default/99999" "" fm-a || fail "kill by label recovery failed"
+  fm_backend_kill tern "tern:Default/$c" "" fm-c || fail "kill failed"
+  fm_backend_kill tern "tern:Default/$d" "" fm-d || fail "kill failed"
+  [ "$(launcher_tab_json | jq -c '[.blocks[].id]')" = '[3]' ] || fail "with every worker gone only the launcher remains"
+  split_worker fm-e >/dev/null || fail "a split into an emptied right half failed"
+  [ "$(grep -c "^tern${US}split${US}3${US}right${US}" "$TERN_LOG")" = 2 ] || fail "with no worker left the next one splits the launcher right again"
+  pass "pane teardown: closes only the worker's pane; the next worker goes under the lowest survivor or right of the launcher"
+}
+
+test_split_task_refuses_duplicates_and_rolls_back() {
+  local out new
+  make_tern_world pane-refuse
+  add_launcher Default
+  TERN_PANE=3 fm_backend_tern_launcher_identity || fail "launcher identity failed"
+  fm_backend_tern_create_task fm-a /work >/dev/null || fail "tab create failed"
+  fm_backend_tern_split_task fm-a /work >/dev/null 2>&1 && fail "a task tab with the same label must refuse a pane"
+  split_worker fm-b >/dev/null || fail "split failed"
+  fm_backend_tern_split_task fm-b /work >/dev/null 2>&1 && fail "a pane with the same label must refuse another"
+  fm_backend_tern_create_task fm-b /work >/dev/null 2>&1 && fail "a pane-placed worker's label must refuse a tab too"
+  [ "$(tern_calls split)" = 1 ] || fail "a refused duplicate must not split anything"
+  out=$(FM_TERN_FAKE_SPLIT_EXTRA=1 fm_backend_tern_split_task fm-c /work 2>&1) && fail "a split that adds two blocks must refuse"
+  new=$(tail -n 1 "$TERN_LOG" | tr "$US" ' ')
+  case "$new" in "tern close "*) ;; *) fail "the refused split must close the block it reported, last call: $new" ;; esac
+  fm_backend_tern_label_taken "$(fm_backend_tern_inventory)" fm-c && fail "a rolled-back worker must leave no fm-c block"
+  (FM_BACKEND_TERN_LAUNCHER_BLOCK=; fm_backend_tern_split_task fm-d /work >/dev/null 2>&1) && fail "a split without a verified launcher must refuse"
+  pass "split_task: refuses a duplicate label in either placement, closes an unverifiable new pane, needs a verified launcher"
+}
+
+test_spawn_pane_placement() {
+  local case_dir="$TMP_ROOT/pane-spawn" home fakebin id=tern-pane-q1 out status
+  make_tern_world pane-spawn
+  add_launcher Default
+  home="$case_dir/home"
+  fakebin=$(make_spawn_fakebin "$case_dir/fake" omp)
+  fm_test_spawn_home "$home" omp
+  fm_git_worktree "$case_dir/project" "$case_dir/wt" wt-tern-pane
+  fm_test_spawn_brief "$home" "$id"
+  printf 'pane\n' >"$home/config/tern-crew-placement"
+  out=$(unset TERN_PANE; fm_test_run_spawn "$home" "$case_dir/wt" "$fakebin" "$id" "$case_dir/project" --harness omp --backend tern --scout)
+  status=$?
+  [ "$status" -ne 0 ] || fail "pane placement outside a Tern pane must refuse"
+  assert_contains "$out" "not running inside one" "the refusal must say the spawn is not in a Tern pane"
+  [ "$(tern_calls split)$(tern_calls new)" = 00 ] || fail "a refused pane placement must create nothing"
+  printf 'panes\n' >"$home/config/tern-crew-placement"
+  out=$(TERN_PANE=3 fm_test_run_spawn "$home" "$case_dir/wt" "$fakebin" "$id" "$case_dir/project" --harness omp --backend tern --scout)
+  status=$?
+  [ "$status" -ne 0 ] || fail "an unrecognized placement must refuse the spawn"
+  assert_contains "$out" "unrecognized value" "the refusal must name the bad value"
+  printf 'pane\n' >"$home/config/tern-crew-placement"
+  printf '{"pane":100,"child":{"pid":1,"name":"zsh","argv":["zsh"],"cwd":"%s"},"group":1,"foreground":{"pid":1,"name":"zsh","argv":["zsh"],"cwd":"%s"}}' \
+    "$case_dir/wt" "$case_dir/wt" >"$W/process/100"
+  out=$(TERN_PANE=3 fm_test_run_spawn "$home" "$case_dir/wt" "$fakebin" "$id" "$case_dir/project" --harness omp --backend tern --scout)
+  status=$?
+  rm -rf "/tmp/fm-$id" "/tmp/fm-$id+"*
+  [ "$status" -eq 0 ] || fail "a pane-placed tern spawn should succeed: $out"
+  grep -q "^tern${US}split${US}3${US}right${US}.*FM_TERN_LABEL=fm-$id${US}" "$TERN_LOG" || fail "the spawn must split the launcher pane: $(tr "$US" ' ' <"$TERN_LOG")"
+  [ "$(tern_calls new)" = 0 ] || fail "a pane-placed spawn must not create a tab"
+  if ! grep -qx 'tern_session=Default' "$home/state/$id.meta" || ! grep -qx 'tern_block_id=100' "$home/state/$id.meta"; then
+    fail "the meta must record the launcher's session and the new block: $(cat "$home/state/$id.meta")"
+  fi
+  grep -q "^tern${US}send${US}100${US}text${US}" "$TERN_LOG" || fail "the launch must be typed into the worker pane"
+  pass "fm-spawn.sh: tern pane placement refuses outside a Tern pane or on a bad value, else splits the launcher and records the worker pane"
 }
 
 # --- agent state / busy state ------------------------------------------------
@@ -804,3 +1034,10 @@ test_supervisor_discovery
 test_secondmate_spawn_refuses_tern
 test_omp_spawn_carries_tern_title_overlay
 test_version_check
+test_crew_placement_config_selects_a_placement_or_refuses
+test_launcher_identity_is_verified_not_trusted
+test_split_task_stacks_workers_right_of_the_launcher
+test_pane_teardown_closes_only_the_worker_pane
+test_split_task_refuses_duplicates_and_rolls_back
+test_spawn_pane_placement
+test_split_task_in_a_named_session_records_an_encoded_endpoint

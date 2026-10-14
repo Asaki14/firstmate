@@ -21,12 +21,23 @@
 # command shows the new tab or steals focus (verified live): a task tab only
 # appears in the window's tab bar when the captain opens that session.
 #
+# Pane placement (config/tern-crew-placement=pane, the Herdr "Crew placement"
+# shape; docs/tern-backend.md "Crew placement" owns the contract): the task's
+# block is instead a split of the LAUNCHING agent's own Tern pane, in the
+# launcher's own tab and session. Tern 0.8.3 names only tabs, so a pane-placed
+# block is labeled through its launch command, which Tern keeps in the block's
+# `args`: `env FM_TERN_HOME=<home session> FM_TERN_LABEL=fm-<id> <shell> -l`.
+# The home key scopes the label, because several homes' launchers can share
+# one Tern session (secondmates run in tabs of the captain's own session).
+#
 # Target string shape: "tern:<session>/<block-id>". The literal `tern:` prefix
 # and the `/` keep it distinct from tmux's `session:window` and herdr's
 # `session:wX:pY` in fm-send.sh's explicit-target heuristic; the block id is
 # Tern's own numeric pane id, which every CLI verb accepts. An empty session
 # ("tern:/<block>") is the unscoped form used only for a supervisor pane
-# discovered from $TERN_PANE (bin/fm-supervisor-target-lib.sh).
+# discovered from $TERN_PANE (bin/fm-supervisor-target-lib.sh). The session is
+# percent-encoded (fm_backend_tern_session_encode) so a launcher session such
+# as "First Mate" stays one metadata atom.
 #
 # Verified facts that shaped this adapter (docs/tern-backend.md has the log):
 #   1. `tern send <block> text -- <text>` types literally without submitting;
@@ -152,30 +163,58 @@ fm_backend_tern_container_ensure() {
   fm_backend_tern_session_name
 }
 
-# fm_backend_tern_block_record: one block's "<session>US<tab name>US<live>"
-# (US = the 0x1f unit separator, which never collapses an empty tab name the
-# way a whitespace IFS would) from an inventory, or failure when absent.
+# FM_BACKEND_TERN_JQ_LABEL: the jq definitions every label read shares.
+# fm_launch_field reads KEY=value from a block's launch command (program plus
+# args). fm_label($s; $t; $home) is a block's task label, scoped to this home:
+# a pane-placed block's FM_TERN_LABEL when its FM_TERN_HOME is this home, a
+# tab-topology block's tab name inside this home's session, and "" otherwise,
+# so another home's worker and the launcher's own pane never carry a label.
+# shellcheck disable=SC2016 # jq variables, not shell expansions.
+FM_BACKEND_TERN_JQ_LABEL='
+  def fm_launch_field($k):
+    first(([.program // ""] + (.args // []) | map(tostring) | join(" "))
+      | capture("(^|\\s)" + $k + "=(?<v>[A-Za-z0-9._-]+)") | .v) // null;
+  def fm_label($s; $t; $home):
+    fm_launch_field("FM_TERN_LABEL") as $l
+    | if $l != null then (if fm_launch_field("FM_TERN_HOME") == $home then $l else "" end)
+      elif $s.name == $home then ($t.name // "")
+      else "" end;
+'
+
+# fm_backend_tern_block_record: one block's "<session>US<label>US<live>"
+# (US = the 0x1f unit separator, which never collapses an empty label the way
+# a whitespace IFS would) from an inventory, or failure when absent. <label>
+# is fm_label above.
 fm_backend_tern_block_record() {  # <inventory-json> <block-id>
   local rec
-  rec=$(printf '%s' "$1" | jq -r --arg b "$2" '
+  rec=$(printf '%s' "$1" | jq -r --arg b "$2" --arg home "$(fm_backend_tern_session_name)" "$FM_BACKEND_TERN_JQ_LABEL"'
     first(.sessions[]? as $s | $s.tabs[]? as $t | $t.blocks[]?
       | select((.id | tostring) == $b)
-      | [$s.name, ($t.name // ""), (if .live == false then "dead" else "live" end)] | join("\u001f")) // empty
+      | [$s.name, fm_label($s; $t; $home), (if .live == false then "dead" else "live" end)] | join("\u001f")) // empty
   ' 2>/dev/null)
   [ -n "$rec" ] || return 1
   printf '%s' "$rec"
 }
 
-# fm_backend_tern_block_for_label: the first block of the tab named <label>
-# in <session>, or failure. Tern enforces no tab-name uniqueness; the
-# duplicate check in create_task is ours.
+# fm_backend_tern_block_for_label: the first block labeled <label> in
+# <session>, or failure. Tern enforces no name uniqueness; the duplicate check
+# in create_task and split_task is ours.
 fm_backend_tern_block_for_label() {  # <inventory-json> <session> <label>
   local id
-  id=$(printf '%s' "$1" | jq -r --arg s "$2" --arg l "$3" '
-    first(.sessions[]? | select(.name == $s) | .tabs[]? | select(.name == $l) | .blocks[0]?.id) // empty
+  id=$(printf '%s' "$1" | jq -r --arg want "$2" --arg l "$3" --arg home "$(fm_backend_tern_session_name)" "$FM_BACKEND_TERN_JQ_LABEL"'
+    first(.sessions[]? as $s | select($s.name == $want) | $s.tabs[]? as $t | $t.blocks[]?
+      | select(fm_label($s; $t; $home) == $l) | .id) // empty
   ' 2>/dev/null)
   case "$id" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s' "$id"
+}
+
+# fm_backend_tern_label_taken: whether this home already has a block labeled
+# <label> in either placement, in any session.
+fm_backend_tern_label_taken() {  # <inventory-json> <label>
+  printf '%s' "$1" | jq -e --arg l "$2" --arg home "$(fm_backend_tern_session_name)" "$FM_BACKEND_TERN_JQ_LABEL"'
+    any(.sessions[]? as $s | $s.tabs[]? as $t | $t.blocks[]? | fm_label($s; $t; $home) == $l; .)
+  ' >/dev/null 2>&1
 }
 
 fm_backend_tern_session_exists() {  # <inventory-json> <session>
@@ -183,14 +222,14 @@ fm_backend_tern_session_exists() {  # <inventory-json> <session>
 }
 
 # fm_backend_tern_create_task: create the task's tab in this home's session
-# and name it <label>, refusing an existing live <label>. Echoes
+# and name it <label>, refusing an existing <label>. Echoes
 # "<session> <block-id>".
 fm_backend_tern_create_task() {  # <label> <cwd>
   local label=$1 cwd=$2 session inv out block attempt
   session=$(fm_backend_tern_session_name)
   inv=$(fm_backend_tern_inventory) || { echo "error: could not read Tern's sessions before creating '$label'" >&2; return 1; }
-  if fm_backend_tern_block_for_label "$inv" "$session" "$label" >/dev/null; then
-    echo "error: Tern tab '$label' already exists in session '$session'" >&2
+  if fm_backend_tern_label_taken "$inv" "$label"; then
+    echo "error: a Tern block labeled '$label' already exists for this home" >&2
     return 1
   fi
   out=
@@ -221,10 +260,209 @@ fm_backend_tern_create_task() {  # <label> <cwd>
   printf '%s %s' "$session" "$block"
 }
 
-# fm_backend_tern_parse_target: split "tern:<session>/<block>". Sets
-# FM_BACKEND_TERN_SESSION and FM_BACKEND_TERN_BLOCK.
+# The config item a home writes to place its crewmates and scouts as panes
+# inside the launching agent's own tab instead of one tab per task.
+FM_BACKEND_TERN_CREW_PLACEMENT_CONFIG="tern-crew-placement"
+
+# fm_backend_tern_crew_placement <config-dir>: the single owner of
+# config/tern-crew-placement parsing. Echoes "tab" (absent file or "tab") or
+# "pane", read whitespace-stripped and case-folded like
+# config/herdr-crew-placement. The item decides where a worker endpoint is
+# created, so an empty or unrecognized value is an actionable error (return 3).
+fm_backend_tern_crew_placement() {  # <config-dir>
+  local config_dir=${1:-} file value
+  [ -n "$config_dir" ] || { printf 'tab\n'; return 0; }
+  file="$config_dir/$FM_BACKEND_TERN_CREW_PLACEMENT_CONFIG"
+  [ -f "$file" ] || { printf 'tab\n'; return 0; }
+  value=$(tr -d '[:space:]' < "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]') || value=""
+  case "$value" in
+    tab) printf 'tab\n' ;;
+    pane) printf 'pane\n' ;;
+    *)
+      echo "error: $file: unrecognized value \"$value\"; write \"tab\" for one task tab per worker or \"pane\" to split the launching agent's own pane" >&2
+      return 3
+      ;;
+  esac
+}
+
+# fm_backend_tern_launcher_identity: the Tern pane this process runs in,
+# verified rather than trusted. TERN_PANE is only a claim (a program started
+# from a Tern pane, or a shell on another daemon, inherits it), so the block
+# must be live in this window's inventory AND its child process must be an
+# ancestor of this process - a kernel fact no inherited variable can fake.
+# Sets FM_BACKEND_TERN_LAUNCHER_BLOCK and FM_BACKEND_TERN_LAUNCHER_SESSION
+# on a 0 return. Returns 2 when this process claims no Tern pane at all, 1
+# (with the reason on stderr) when the claim cannot be verified.
+fm_backend_tern_launcher_identity() {
+  local pane=${TERN_PANE:-} inv rec child pid steps=0
+  FM_BACKEND_TERN_LAUNCHER_BLOCK=
+  FM_BACKEND_TERN_LAUNCHER_SESSION=
+  [ -n "$pane" ] || return 2
+  case "$pane" in
+    *[!0-9]*)
+      echo "error: TERN_PANE='$pane' is not a Tern block id; refusing to place a worker from an unverifiable launcher pane" >&2
+      return 1
+      ;;
+  esac
+  inv=$(fm_backend_tern_inventory) || {
+    echo "error: could not read Tern's sessions to verify the launcher pane $pane; refusing to place a worker" >&2
+    return 1
+  }
+  rec=$(fm_backend_tern_block_record "$inv" "$pane") && [ "${rec##*$'\037'}" = live ] || {
+    echo "error: the launcher pane $pane (TERN_PANE) is not a live block of this Tern window; refusing to place a worker" >&2
+    return 1
+  }
+  child=$(fm_backend_tern_process_json "$pane" | jq -r '.child.pid // empty' 2>/dev/null)
+  case "$child" in
+    ''|*[!0-9]*)
+      echo "error: tern could not report the launcher pane $pane's process; refusing to place a worker" >&2
+      return 1
+      ;;
+  esac
+  pid=$$
+  while [ "$pid" != "$child" ]; do
+    steps=$((steps + 1))
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    case "$pid" in ''|0|1|*[!0-9]*) pid= ;; esac
+    if [ -z "$pid" ] || [ "$steps" -gt 64 ]; then
+      echo "error: this process does not run inside the Tern pane $pane that TERN_PANE claims; refusing to place a worker from an inherited launcher identity" >&2
+      return 1
+    fi
+  done
+  FM_BACKEND_TERN_LAUNCHER_BLOCK=$pane
+  FM_BACKEND_TERN_LAUNCHER_SESSION=${rec%%$'\037'*}
+  return 0
+}
+
+# fm_backend_tern_tab_blocks: the sorted block ids of the tab holding <block>,
+# space-separated, or failure when the block is not listed.
+fm_backend_tern_tab_blocks() {  # <inventory-json> <block-id>
+  local ids
+  ids=$(printf '%s' "$1" | jq -r --arg b "$2" '
+    first(.sessions[]?.tabs[]? | select(any(.blocks[]?; (.id | tostring) == $b))
+      | [.blocks[]?.id | tostring] | sort | join(" ")) // empty
+  ' 2>/dev/null)
+  [ -n "$ids" ] || return 1
+  printf '%s' "$ids"
+}
+
+# fm_backend_tern_split_placement: which block to split, and how, echoing
+# "<block> right|down". The launcher keeps the left half of its tab; the first
+# worker splits the launcher to the right and every later one splits the
+# bottom-most other pane of the tab downward, read off the tab's own split tree
+# (Row = side by side, Column = stacked), so after a teardown the next worker
+# goes under the lowest survivor. An unreadable tree splits the launcher to the
+# right, which is still pane placement.
+fm_backend_tern_split_placement() {  # <inventory-json> <launcher-block>
+  local best
+  best=$(printf '%s' "$1" | jq -r --arg l "$2" '
+    def rects($n; $y; $h):
+      if ($n | type) != "object" then error("node")
+      elif ($n | has("Leaf")) then {id: ($n.Leaf | tostring), bottom: ($y + $h)}
+      elif ($n | has("Split")) then
+        $n.Split as $s | ($s.ratio // 0.5) as $r
+        | if $s.axis == "Row" then rects($s.a; $y; $h), rects($s.b; $y; $h)
+          elif $s.axis == "Column" then rects($s.a; $y; $h * $r), rects($s.b; $y + $h * $r; $h * (1 - $r))
+          else error("axis") end
+      else error("node") end;
+    first(.sessions[]?.tabs[]? | select(any(.blocks[]?; (.id | tostring) == $l))) as $t
+    | [rects($t.splits; 0; 1)] | map(select(.id != $l))
+    | if length > 0 then (sort_by([-.bottom, .id]) | .[0] | "\(.id) down") else "\($l) right" end
+  ' 2>/dev/null)
+  case "$best" in
+    *[0-9]' right'|*[0-9]' down') printf '%s' "$best" ;;
+    *) printf '%s right' "$2" ;;
+  esac
+}
+
+# fm_backend_tern_split_rollback: close the one block this spawn just created
+# and cannot publish.
+fm_backend_tern_split_rollback() {  # <block> <reason>
+  echo "error: $2; closing the Tern pane $1 this spawn had just created" >&2
+  fm_backend_tern_cli close "$1" >/dev/null 2>&1 || echo "warning: could not close the Tern pane $1; close it manually" >&2
+  return 1
+}
+
+# fm_backend_tern_split_task: create the task's block as a pane in the
+# verified launcher's own tab (fm_backend_tern_launcher_identity must have
+# returned 0) and label it through its launch command. The new block is
+# identified structurally: exactly one block must join the launcher's tab, it
+# must be the block the split reported, and it must read back with this
+# home's <label>; anything else is closed again rather than published. Echoes
+# "<session> <block-id>".
+fm_backend_tern_split_task() {  # <label> <cwd>
+  local label=$1 cwd=$2 launcher=${FM_BACKEND_TERN_LAUNCHER_BLOCK:-} home inv before after target dir shell out block new id rec
+  home=$(fm_backend_tern_session_name)
+  [ -n "$launcher" ] || { echo "error: internal: tern pane placement has no verified launcher pane" >&2; return 1; }
+  case "$home$label" in
+    *[!A-Za-z0-9._-]*)
+      echo "error: tern pane placement needs a home session name and task label made of letters, digits, '.', '_' and '-' (got '$home', '$label')" >&2
+      return 1
+      ;;
+  esac
+  inv=$(fm_backend_tern_inventory) || { echo "error: could not read Tern's sessions before creating '$label'" >&2; return 1; }
+  if fm_backend_tern_label_taken "$inv" "$label"; then
+    echo "error: a Tern block labeled '$label' already exists for this home" >&2
+    return 1
+  fi
+  before=$(fm_backend_tern_tab_blocks "$inv" "$launcher") || { echo "error: the launcher pane $launcher is no longer listed by Tern" >&2; return 1; }
+  read -r target dir <<EOF
+$(fm_backend_tern_split_placement "$inv" "$launcher")
+EOF
+  shell=${SHELL:-/bin/sh}
+  case "$shell" in /*[!A-Za-z0-9._/+-]*|/) shell=/bin/sh ;; /*) ;; *) shell=/bin/sh ;; esac
+  out=$(fm_backend_tern_cli split "$target" "$dir" --cwd "$cwd" --json -- \
+    /usr/bin/env "FM_TERN_HOME=$home" "FM_TERN_LABEL=$label" "$shell" -l 2>&1) || {
+    echo "error: tern could not split pane $target $dir for '$label': $out" >&2
+    return 1
+  }
+  block=$(printf '%s' "$out" | jq -r '.block // empty' 2>/dev/null)
+  case "$block" in
+    ''|*[!0-9]*)
+      echo "error: tern split for '$label' reported no block: $out" >&2
+      return 1
+      ;;
+  esac
+  inv=$(fm_backend_tern_inventory) || { fm_backend_tern_split_rollback "$block" "could not read Tern's sessions after the split"; return 1; }
+  after=$(fm_backend_tern_tab_blocks "$inv" "$launcher") || { fm_backend_tern_split_rollback "$block" "the launcher pane $launcher vanished during the split"; return 1; }
+  new=
+  for id in $after; do
+    case " $before " in *" $id "*) ;; *) new="$new $id" ;; esac
+  done
+  if [ "$new" != " $block" ]; then
+    fm_backend_tern_split_rollback "$block" "the launcher's tab gained blocks '${new# }' instead of exactly the split block $block"
+    return 1
+  fi
+  rec=$(fm_backend_tern_block_record "$inv" "$block") || rec=
+  if [ "$rec" != "${FM_BACKEND_TERN_LAUNCHER_SESSION}"$'\037'"$label"$'\037'live ]; then
+    fm_backend_tern_split_rollback "$block" "the new pane $block does not read back as a live '$label' pane in session '$FM_BACKEND_TERN_LAUNCHER_SESSION'"
+    return 1
+  fi
+  printf '%s %s' "$(fm_backend_tern_session_encode "$FM_BACKEND_TERN_LAUNCHER_SESSION")" "$block"
+}
+
+# fm_backend_tern_session_encode: a session name as a target and metadata
+# atom. A pane-placed worker records its launcher's session, which the user
+# names (fm-tern-autostart's is "First Mate"), so every byte outside
+# [A-Za-z0-9._-] is written %XX - jq's `@uri` with `~` encoded too, which is
+# how list_live encodes it; a home session name passes unchanged.
+fm_backend_tern_session_encode() {  # <name>
+  local LC_ALL=C s=$1 out='' c i
+  for ((i = 0; i < ${#s}; i++)); do
+    c=${s:i:1}
+    case "$c" in
+      [A-Za-z0-9._-]) out+=$c ;;
+      *) out+=$(printf '%%%02X' "'$c") ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# fm_backend_tern_parse_target: split "tern:<session>/<block>", decoding the
+# session (fm_backend_tern_session_encode). Sets FM_BACKEND_TERN_SESSION and
+# FM_BACKEND_TERN_BLOCK.
 fm_backend_tern_parse_target() {  # <target>
-  local target=$1 rest
+  local target=$1 rest session
   FM_BACKEND_TERN_SESSION=
   FM_BACKEND_TERN_BLOCK=
   case "$target" in
@@ -232,29 +470,35 @@ fm_backend_tern_parse_target() {  # <target>
     *) return 1 ;;
   esac
   rest=${target#tern:}
-  FM_BACKEND_TERN_SESSION=${rest%/*}
+  session=${rest%/*}
   FM_BACKEND_TERN_BLOCK=${rest##*/}
   case "$FM_BACKEND_TERN_BLOCK" in ''|*[!0-9]*) return 1 ;; esac
-  case "$FM_BACKEND_TERN_SESSION" in */*) return 1 ;; esac
+  case "$session" in */*|*\\*) return 1 ;; esac
+  if [[ $session == *%* ]]; then
+    [[ ! $session =~ %([^0-9A-F]|[0-9A-F][^0-9A-F]|[0-9A-F]?$) ]] || return 1
+    session=$(printf '%b' "${session//%/\\x}")
+  fi
+  FM_BACKEND_TERN_SESSION=$session
   return 0
 }
 
 # fm_backend_tern_target_ready: parse the target and verify its block is live
 # in the inventory. With the owning task's fm-<id> label, the block must still
-# sit in a tab of that name in the recorded session; when the recorded block
-# is gone the label recovers the task's current block (Tern block ids do not
-# survive a daemon restart that rebuilds the session).
+# carry that label (its tab's name, or a pane-placed block's own launch label)
+# in the recorded session; when the recorded block is gone the label recovers
+# the task's current block (Tern block ids do not survive a daemon restart
+# that rebuilds the session).
 fm_backend_tern_target_ready() {  # <target> [expected-label]
-  local expected_label=${2:-} inv rec session tab live block
+  local expected_label=${2:-} inv rec session label live block
   fm_backend_tern_parse_target "$1" || return 1
   inv=$(fm_backend_tern_inventory) || return 1
   if rec=$(fm_backend_tern_block_record "$inv" "$FM_BACKEND_TERN_BLOCK"); then
-    IFS=$'\037' read -r session tab live <<EOF
+    IFS=$'\037' read -r session label live <<EOF
 $rec
 EOF
     [ "$live" = live ] || return 1
     [ -n "$expected_label" ] || return 0
-    [ "$tab" = "$expected_label" ] || return 1
+    [ "$label" = "$expected_label" ] || return 1
     [ -z "$FM_BACKEND_TERN_SESSION" ] || [ "$session" = "$FM_BACKEND_TERN_SESSION" ] || return 1
     return 0
   fi
@@ -366,13 +610,14 @@ fm_backend_tern_send_text_submit() {  # <target> <text> <retries> <enter-sleep> 
 }
 
 # fm_backend_tern_kill: close the task's block, including an exited
-# kept-open one still sitting in the task's tab (found by label when the
-# recorded block id is gone). Already gone (or now holding another tab's
-# block) is success; a close Tern refused while the block is still listed, or
-# an unreadable inventory, is a failure the caller must not paper over
+# kept-open one still carrying the task's label (found by label when the
+# recorded block id is gone). Only that block closes: a pane-placed worker's
+# launcher pane and tab stay. Already gone (or now another task's block) is
+# success; a close Tern refused while the block is still listed, or an
+# unreadable inventory, is a failure the caller must not paper over
 # (fm_backend_kill's retain-and-stop contract).
 fm_backend_tern_kill() {  # <target> [unused] [expected-label]
-  local expected_label=${3:-} inv rec session tab live
+  local expected_label=${3:-} inv rec session label live
   fm_backend_tern_parse_target "$1" || return 0
   inv=$(fm_backend_tern_inventory) || {
     echo "error: could not read Tern's sessions to close $1" >&2
@@ -384,12 +629,12 @@ fm_backend_tern_kill() {  # <target> [unused] [expected-label]
       FM_BACKEND_TERN_BLOCK=$(fm_backend_tern_block_for_label "$inv" "$FM_BACKEND_TERN_SESSION" "$expected_label") || return 0
       rec=$(fm_backend_tern_block_record "$inv" "$FM_BACKEND_TERN_BLOCK") || return 0
     fi
-    IFS=$'\037' read -r session tab live <<EOF
+    IFS=$'\037' read -r session label live <<EOF
 $rec
 EOF
     [ "$live" = dead ] || return 0
     if [ -n "$expected_label" ]; then
-      [ "$tab" = "$expected_label" ] || return 0
+      [ "$label" = "$expected_label" ] || return 0
       [ -z "$FM_BACKEND_TERN_SESSION" ] || [ "$session" = "$FM_BACKEND_TERN_SESSION" ] || return 0
     fi
   fi
@@ -403,16 +648,22 @@ EOF
 }
 
 # fm_backend_tern_list_live: recovery/orphan discovery - every fm-* tab of
-# this home's session, by NAME. One "tern:<session>/<block>\tfm-<id>" line
+# this home's session and every pane-placed block whose launch label belongs
+# to this home, in any session. One "tern:<session>/<block>\tfm-<id>" line
 # each. Read-only; an unreachable Tern lists nothing.
 fm_backend_tern_list_live() {
   local inv session
   session=$(fm_backend_tern_session_name)
   inv=$(fm_backend_tern_inventory) || return 0
-  printf '%s' "$inv" | jq -r --arg s "$session" '
-    .sessions[]? | select(.name == $s) | .tabs[]?
-    | select((.name // "") | startswith("fm-")) | select(.blocks[0]?.id != null)
-    | "tern:\($s)/\(.blocks[0].id)\t\(.name)"
+  printf '%s' "$inv" | jq -r --arg home "$session" "$FM_BACKEND_TERN_JQ_LABEL"'
+    (.sessions[]? | select(.name == $home) | .tabs[]?
+      | select((.name // "") | startswith("fm-")) | select(.blocks[0]?.id != null)
+      | select((.blocks[0] | fm_launch_field("FM_TERN_LABEL")) == null)
+      | "tern:\($home)/\(.blocks[0].id)\t\(.name)"),
+    (.sessions[]? as $s | $s.tabs[]? as $t | $t.blocks[]?
+      | select(fm_launch_field("FM_TERN_LABEL") != null)
+      | fm_label($s; $t; $home) as $l | select($l | startswith("fm-"))
+      | "tern:\($s.name | @uri | gsub("~"; "%7E"))/\(.id)\t\($l)")
   ' 2>/dev/null
 }
 
