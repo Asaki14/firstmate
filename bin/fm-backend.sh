@@ -689,6 +689,9 @@ fm_backend_source() {  # <name>
     cmux)
       set -- fm-backend-hometag-lib.sh fm-composer-lib.sh
       ;;
+    tern)
+      set -- fm-backend-hometag-lib.sh fm-composer-lib.sh fm-agent-process-lib.sh
+      ;;
     *)
       return 1
       ;;
@@ -737,7 +740,7 @@ fm_backend_source() {  # <name>
     tern)
       if [ -z "${_FM_BACKEND_TERN_SOURCED:-}" ]; then
         # shellcheck source=/dev/null
-        . "$FM_BACKEND_LIB_DIR/backends/tern.sh" || return 1
+        . "$adapter" || return 1
         _FM_BACKEND_TERN_SOURCED=1
       fi
       ;;
